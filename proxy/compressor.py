@@ -32,9 +32,15 @@ import logging
 import http.client
 from urllib.parse import urlparse
 
+import endpoints
+
 log = logging.getLogger("rolling-context.compressor")
 
-_default_summarizer_url = os.environ.get("ROLLING_CONTEXT_UPSTREAM") or "https://api.anthropic.com"
+# Resolve through endpoints so a custom upstream configured in settings.json is
+# honoured here too. Reading os.environ alone sent every compaction to
+# api.anthropic.com with the custom endpoint's key — a 401 on every attempt,
+# so nothing ever got compressed (issue #5).
+_default_summarizer_url = endpoints.load_upstream()
 SUMMARIZER_URL_SET = bool(os.environ.get("ROLLING_CONTEXT_SUMMARIZER_URL"))
 SUMMARIZER_BASE_URL = os.environ.get("ROLLING_CONTEXT_SUMMARIZER_URL") or _default_summarizer_url
 SUMMARIZER_API_KEY = os.environ.get("ROLLING_CONTEXT_SUMMARIZER_KEY") or ""
@@ -42,6 +48,12 @@ SUMMARIZER_API_KEY = os.environ.get("ROLLING_CONTEXT_SUMMARIZER_KEY") or ""
 SUMMARIZER_FORMAT = (os.environ.get("ROLLING_CONTEXT_SUMMARIZER_FORMAT") or "anthropic").lower()
 # Any custom summarizer config switches off native mode
 NATIVE_MODE = not (SUMMARIZER_URL_SET or SUMMARIZER_API_KEY or SUMMARIZER_FORMAT != "anthropic")
+# Third-party Anthropic-compatible endpoints (Z.ai/GLM, OpenRouter, …) accept
+# the /v1/messages shape but not always every field Claude Code sends —
+# cache_control breakpoints and tool_choice:none are the usual rejections. Keep
+# native mode (it is still the cheapest path when it works) but fall back to a
+# flattened summary rather than burning the whole compaction on one 400.
+NATIVE_FALLBACK = not endpoints.is_anthropic(SUMMARIZER_BASE_URL)
 LEGACY_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 
 ssl_ctx = ssl.create_default_context()
@@ -427,9 +439,12 @@ class RollingCompressor:
     # Flattened mode: standalone request to a custom summarizer
     # ------------------------------------------------------------------
 
-    def _summarize_flattened(self, prompt: str, auth_headers: dict) -> str:
+    def _summarize_flattened(self, prompt: str, auth_headers: dict,
+                             model_override: str = "") -> str:
         summary_max_tokens = 16000
-        model = self.summarizer_model or LEGACY_DEFAULT_MODEL
+        # LEGACY_DEFAULT_MODEL is a Claude model name — meaningless to a
+        # third-party endpoint, so callers there pass the session's own model.
+        model = self.summarizer_model or model_override or LEGACY_DEFAULT_MODEL
 
         if SUMMARIZER_FORMAT == "openai":
             if not self.summarizer_model:
@@ -521,8 +536,21 @@ class RollingCompressor:
 
         use_native = NATIVE_MODE and payload is not None
         if use_native:
-            new_summary = self._summarize_native(payload, messages, keep_from_idx, auth_headers)
-        else:
+            try:
+                new_summary = self._summarize_native(
+                    payload, messages, keep_from_idx, auth_headers)
+            except Exception as e:
+                if not NATIVE_FALLBACK:
+                    raise
+                # A third-party endpoint that choked on the cloned request
+                # shape. One flattened retry beats a 300s cooldown and a
+                # session that never compresses at all.
+                log.warning(
+                    f"Native compaction failed against {SUMMARIZER_BASE_URL} "
+                    f"({e}); retrying flattened"
+                )
+                use_native = False
+        if not use_native:
             existing_summary = self._extract_summary(messages) if has_existing_summary else ""
             to_compress = messages[start_idx:keep_from_idx]
             if not to_compress:
@@ -545,7 +573,9 @@ class RollingCompressor:
                 f"Summarizing {keep_from_idx - start_idx} messages "
                 f"({len(conversation_text):,} chars, flattened)..."
             )
-            new_summary = self._summarize_flattened(prompt, auth_headers)
+            session_model = (payload or {}).get("model", "") if NATIVE_FALLBACK else ""
+            new_summary = self._summarize_flattened(
+                prompt, auth_headers, model_override=session_model)
 
         log.info(f"Summary generated: {len(new_summary):,} chars")
 

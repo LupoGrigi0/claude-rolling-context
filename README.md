@@ -162,6 +162,38 @@ export ROLLING_CONTEXT_SUMMARIZER_KEY=sk-or-...
 export ROLLING_CONTEXT_MODEL=deepseek/deepseek-chat
 ```
 
+### Non-Anthropic endpoints (GLM/Z.ai, DeepSeek, OpenRouter, a local gateway)
+
+Point Claude Code at your endpoint the usual way and install as normal. The hook
+chains it — `ANTHROPIC_BASE_URL` becomes the proxy, and your endpoint becomes
+`ROLLING_CONTEXT_UPSTREAM` — and **both** the chat traffic and the background
+compaction go there. No extra configuration.
+
+Third-party endpoints implement the `/v1/messages` shape to varying depth. Native
+mode clones the request Claude Code just sent, which can include `cache_control`
+breakpoints and `tool_choice`; if your endpoint rejects one of those, the proxy
+retries the compaction as a plain flattened summary using the session's own model
+rather than giving up for the cooldown period. Both paths are covered by
+`tests/` , which runs the real proxy against a mock endpoint — including a
+deliberately strict one that rejects those fields.
+
+Check it landed — the startup banner names the compaction endpoint separately
+from the chat endpoint, and they should match:
+
+```
+Forwarding to: https://api.z.ai/api/anthropic
+Compacting via: https://api.z.ai/api/anthropic (third-party — flattened fallback armed)
+```
+
+**On auto-compact.** Rolling Context doesn't disable Claude Code's auto-compact;
+it keeps the reported context low enough that auto-compact never gets near its
+threshold. If auto-compact still fires on a custom endpoint, compaction is
+failing — read `~/.claude/rolling-context-debug.log` rather than raising the
+threshold. Claude Code sizes the window from the model name and falls back to
+200K for names it doesn't know; for a non-`claude-*` model you can state the real
+window with `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, which is cleaner than encoding it
+in the model name.
+
 ## Architecture
 
 The proxy is **fully stateless** — no sessions, no databases, no tracking. It works by hashing message content:

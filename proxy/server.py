@@ -24,6 +24,7 @@ import http.client
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
+import endpoints
 from compressor import RollingCompressor
 
 class FlushFileHandler(logging.FileHandler):
@@ -41,39 +42,9 @@ logging.basicConfig(
 )
 log = logging.getLogger("rolling-context")
 
-LISTEN_PORT = int(os.environ.get("ROLLING_CONTEXT_PORT") or "5588")
+LISTEN_PORT = endpoints.LISTEN_PORT
 
-
-def _load_upstream() -> str:
-    """Resolve the upstream API endpoint.
-
-    Prefer ROLLING_CONTEXT_UPSTREAM from the environment. The hook writes it into
-    settings.json but does not export it into this process (issue #3), so fall
-    back to reading settings.json directly — this is what lets the proxy work
-    with custom endpoints (DeepSeek, OpenRouter, a local proxy, a chained PII
-    proxy) instead of always hitting api.anthropic.com.
-    """
-    up = os.environ.get("ROLLING_CONTEXT_UPSTREAM")
-    if up:
-        return up
-    try:
-        settings_path = os.path.join(os.path.expanduser("~"), ".claude", "settings.json")
-        with open(settings_path, encoding="utf-8") as f:
-            env_vars = (json.load(f) or {}).get("env", {}) or {}
-        up = env_vars.get("ROLLING_CONTEXT_UPSTREAM")
-        if up:
-            return up
-        # Last resort: a custom ANTHROPIC_BASE_URL — but never route back at
-        # ourselves (that would loop).
-        base = env_vars.get("ANTHROPIC_BASE_URL", "")
-        if base and (urlparse(base).port or 0) != LISTEN_PORT:
-            return base
-    except Exception:
-        pass
-    return "https://api.anthropic.com"
-
-
-UPSTREAM_URL = _load_upstream()
+UPSTREAM_URL = endpoints.load_upstream(LISTEN_PORT)
 TRIGGER_TOKENS = int(os.environ.get("ROLLING_CONTEXT_TRIGGER") or "100000")
 TARGET_TOKENS = int(os.environ.get("ROLLING_CONTEXT_TARGET") or "40000")
 # Empty = native mode compresses with the session's own model (prompt-cache
@@ -801,7 +772,8 @@ class ThreadedHTTPServer(HTTPServer):
 
 
 def main():
-    from compressor import NATIVE_MODE, SUMMARIZER_FORMAT
+    from compressor import (NATIVE_MODE, NATIVE_FALLBACK, SUMMARIZER_BASE_URL,
+                            SUMMARIZER_FORMAT)
     log.info(f"Starting Rolling Context Proxy on port {LISTEN_PORT}")
     log.info(f"  Trigger at: {TRIGGER_TOKENS:,} tokens")
     log.info(f"  Compress down to: {TARGET_TOKENS:,} tokens (recent context)")
@@ -809,6 +781,10 @@ def main():
     log.info(f"  Summarizer mode: "
              f"{'native (cloned session request, prompt-cached)' if NATIVE_MODE else f'flattened/{SUMMARIZER_FORMAT}'}")
     log.info(f"  Forwarding to: {UPSTREAM_URL}")
+    # Printed separately from the upstream on purpose: when these two disagree
+    # unintentionally, compaction 401s forever and nothing ever compresses.
+    log.info(f"  Compacting via: {SUMMARIZER_BASE_URL}"
+             f"{' (third-party — flattened fallback armed)' if NATIVE_FALLBACK else ''}")
     log.info(f"  Matching: content-based (no sessions/fingerprints)")
 
     server = ThreadedHTTPServer(("127.0.0.1", LISTEN_PORT), ProxyHandler)
