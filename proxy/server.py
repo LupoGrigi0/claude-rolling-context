@@ -641,9 +641,15 @@ class ProxyHandler(BaseHTTPRequestHandler):
         msg_hashes = _hash_messages(messages)
         msg_chars = compressor._count_chars(messages)
 
+        # Claude Code sends this on every request, and a subagent inherits its
+        # parent's — it gets its own transcript, not its own session. That is
+        # what lets a session's toggle reach the agents it spawns.
+        session_id = self.headers.get("X-Claude-Code-Session-Id") or ""
+
         log.info(
             f"[MSG] model={model} stream={is_streaming} "
-            f"messages={len(messages)} chars={msg_chars:,}"
+            f"messages={len(messages)} chars={msg_chars:,} "
+            f"session={session_id[:8] or '(none)'}"
         )
 
         # /rolling-context:off — resolved fresh per request so the toggle is
@@ -653,10 +659,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         # resumes without recompressing.
         # A marker in this request updates the latch for its session; requests
         # without one (later turns, and the subagents this session spawns) read
-        # it back. Claude Code sends the session id on every request and
-        # subagents inherit their parent's, which is what carries the setting
-        # across into agent contexts.
-        session_id = self.headers.get("X-Claude-Code-Session-Id") or ""
+        # it back.
         marker_state = _session_disabled(messages)
         if marker_state is not None:
             if session_toggles.set(session_id, marker_state):
