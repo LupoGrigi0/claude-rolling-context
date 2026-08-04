@@ -35,7 +35,9 @@ class FlushFileHandler(logging.FileHandler):
         self.flush()
 
 _log_path = os.path.join(os.path.expanduser("~"), ".claude", "rolling-context-debug.log")
-_log_handler = FlushFileHandler(_log_path, mode="a")
+# encoding is explicit: without it Windows falls back to cp1252 and the em
+# dashes in these log messages land as mojibake.
+_log_handler = FlushFileHandler(_log_path, mode="a", encoding="utf-8")
 _log_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
 logging.basicConfig(
     level=logging.DEBUG,
