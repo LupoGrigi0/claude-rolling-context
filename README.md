@@ -247,14 +247,26 @@ an explicit toggle in a session always wins over it. A missing or malformed
 config falls back to on, so a typo can never silently disable your install.
 `/rolling-context:status` prints the current default and the config path.
 
-Two things worth knowing:
+### Subagents follow the session that spawned them
 
-- The session scope rides in the conversation itself rather than in any state
-  file, which is what keeps the proxy sessionless. If a conversation is
-  `/compact`ed the marker can be summarized away, and that session falls back
-  to the machine-wide setting — just run `/rolling-context:off` again.
-- Subagents get their own transcripts, so a session-scoped off does not reach
-  them. Use `--global` if you want subagents uncompressed too.
+`/rolling-context:off` covers the subagents your session launches, so a
+planning session where agents explore the repo keeps full context everywhere —
+not just in the main thread.
+
+The command prints a marker into the transcript, and the proxy latches it
+against the `X-Claude-Code-Session-Id` header Claude Code sends on every
+request. A subagent gets its own transcript, so it never carries the marker,
+but it inherits its parent's session id — which is what carries the setting in.
+Other sessions on the same machine are unaffected either way.
+
+The latch also outlives the marker: if a conversation is `/compact`ed and the
+marker is summarized away, the session keeps its setting.
+
+One caveat: the latch lives in the proxy's memory, bounded to the 512 most
+recent sessions. Restart the proxy (or blow past 512 sessions) and it forgets,
+so a session falls back to the machine-wide setting until its next marker is
+seen. That costs savings for a request, never correctness — and re-running
+`/rolling-context:off` restores it.
 
 ## Configuration
 

@@ -15,6 +15,7 @@ Pure stdlib — no external dependencies needed.
 import hashlib
 import json
 import os
+from collections import OrderedDict
 import sys
 import logging
 import threading
@@ -148,6 +149,55 @@ def _iter_text(content):
                 nested = block.get("content")
                 if isinstance(nested, (str, list)):
                     yield from _iter_text(nested)
+
+
+class SessionToggleStore:
+    """Latches each session's toggle against its Claude Code session id.
+
+    The marker only ever appears in the conversation that ran the command, but
+    Claude Code sends X-Claude-Code-Session-Id on every request and a subagent
+    inherits its parent's session id (subagents get their own transcript, not
+    their own session). Latching the marker against that id is what makes
+    /rolling-context:off reach the subagents a session spawns.
+
+    It also outlives the marker: if a conversation is /compact'ed and the
+    marker is summarized away, the latch still holds.
+
+    Bounded and lossy on purpose. Overflowing or restarting the proxy forgets a
+    session, which costs savings for one more request until the marker is seen
+    again — never correctness.
+    """
+
+    def __init__(self, limit=512):
+        self._lock = threading.Lock()
+        self._state = OrderedDict()
+        self._limit = limit
+
+    def set(self, session_id: str, disabled: bool):
+        if not session_id:
+            return
+        with self._lock:
+            previous = self._state.get(session_id)
+            self._state[session_id] = disabled
+            self._state.move_to_end(session_id)
+            while len(self._state) > self._limit:
+                self._state.popitem(last=False)
+            return previous != disabled
+
+    def get(self, session_id: str):
+        if not session_id:
+            return None
+        with self._lock:
+            if session_id not in self._state:
+                return None
+            self._state.move_to_end(session_id)
+            return self._state[session_id]
+
+    def __len__(self):
+        return len(self._state)
+
+
+session_toggles = SessionToggleStore()
 
 
 def _session_disabled(messages: list):
@@ -601,16 +651,34 @@ class ProxyHandler(BaseHTTPRequestHandler):
         # decides, and falls back to on. Disabled means "stop acting", not
         # "forget": stored compressions are left intact so turning back on
         # resumes without recompressing.
+        # A marker in this request updates the latch for its session; requests
+        # without one (later turns, and the subagents this session spawns) read
+        # it back. Claude Code sends the session id on every request and
+        # subagents inherit their parent's, which is what carries the setting
+        # across into agent contexts.
+        session_id = self.headers.get("X-Claude-Code-Session-Id") or ""
+        marker_state = _session_disabled(messages)
+        if marker_state is not None:
+            if session_toggles.set(session_id, marker_state):
+                log.info(
+                    f"[MSG] Session {session_id[:8] or '(none)'} toggled "
+                    f"{'OFF' if marker_state else 'ON'} by marker"
+                )
+
         # Precedence: env kill-switch, then an explicit machine-wide off, then
-        # this conversation's own marker, then the configured default.
+        # this session's own setting, then the configured default.
         if switch.is_disabled():
             disabled, scope = True, "machine-wide"
         else:
-            session_state = _session_disabled(messages)
+            session_state = marker_state
+            scope = "this session"
+            if session_state is None:
+                session_state = session_toggles.get(session_id)
+                scope = "inherited from this session"
             if session_state is None:
                 disabled, scope = not switch.config_default_enabled(), "config default"
             else:
-                disabled, scope = session_state, "this session"
+                disabled = session_state
         if disabled:
             log.info(
                 f"[MSG] rolling-context is OFF ({scope}) — passing through "

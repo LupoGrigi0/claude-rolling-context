@@ -185,13 +185,16 @@ def conversation(pairs, tail):
     return msgs
 
 
-def post(port, msgs):
+def post(port, msgs, session_id=None):
+    headers = {"content-type": "application/json", "x-api-key": "k",
+               "anthropic-version": "2023-06-01"}
+    if session_id:
+        headers["X-Claude-Code-Session-Id"] = session_id
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}/v1/messages",
         data=json.dumps({"model": "glm-4.6", "max_tokens": 64,
                          "stream": True, "messages": msgs}).encode(),
-        headers={"content-type": "application/json", "x-api-key": "k",
-                 "anthropic-version": "2023-06-01"},
+        headers=headers,
     )
     with urllib.request.urlopen(req, timeout=60) as r:
         r.read()
@@ -512,6 +515,117 @@ def config_default(root):
     return sum(1 for ok in results if not ok)
 
 
+# ---------------------------------------------------------------- part G ----
+
+def subagent_inheritance(root):
+    """A subagent inherits its parent session's toggle.
+
+    Subagents get their own transcript — so their message list never contains
+    the parent's marker — but they inherit the parent's session id. The proxy
+    latches the marker against that id, which is what carries the setting in.
+    """
+    print("  subagents inherit their session's toggle")
+    work = os.path.join(root, "subagent")
+    switch_home = os.path.join(work, "flag")
+    os.makedirs(switch_home, exist_ok=True)
+    switch_cmd(switch_home, "on", "--global")
+
+    mock_port, proxy_port = free_port(), free_port()
+    log = os.path.join(work, "mock.jsonl")
+    mock, proxy = start_stack(work, switch_home, mock_port, proxy_port, log)
+    results = []
+    PARENT, OTHER = "sess-parent-aaa", "sess-other-bbb"
+    try:
+        # Parent turns compression off for its own session.
+        p1 = conversation(24, "parent turn one") + [marked("off")]
+        post(proxy_port, p1, session_id=PARENT)
+        time.sleep(1)
+
+        # A subagent of that session: own transcript, no marker, same id.
+        sub = conversation(24, "subagent doing a task")
+        sub[0] = {"role": "user", "content": "subagent divergence " + "s" * 400}
+        post(proxy_port, sub, session_id=PARENT)
+        time.sleep(6)
+        sub2 = sub + [{"role": "assistant", "content": "ok"},
+                      {"role": "user", "content": "subagent step two"}]
+        post(proxy_port, sub2, session_id=PARENT)
+        time.sleep(1)
+
+        # An unrelated session must be untouched by all of it.
+        o1 = conversation(24, "other session turn one")
+        o1[0] = {"role": "user", "content": "other divergence " + "o" * 400}
+        post(proxy_port, o1, session_id=OTHER)
+        time.sleep(6)
+        o2 = o1 + [{"role": "assistant", "content": "ok"},
+                   {"role": "user", "content": "other turn two"}]
+        post(proxy_port, o2, session_id=OTHER)
+        time.sleep(1)
+
+        # Parent opts back in; its subagents must follow it back.
+        p2 = p1 + [{"role": "assistant", "content": "ok"}, marked("on")]
+        post(proxy_port, p2, session_id=PARENT)
+        time.sleep(1)
+        sub3 = sub2 + [{"role": "assistant", "content": "ok"},
+                       {"role": "user", "content": "subagent step three"}]
+        post(proxy_port, sub3, session_id=PARENT)
+        time.sleep(1)
+    finally:
+        proxy.terminate()
+        mock.terminate()
+
+    chat = [r for r in requests_from(log) if not r["compaction"]]
+    sub2_req, o2_req, sub3_req = chat[2], chat[4], chat[6]
+
+    check(results, "subagent inherits the parent's off, despite no marker",
+          not sub2_req["carries_summary"]
+          and sub2_req["convo_chars"] >= len(json.dumps(sub2)) * 0.99,
+          f"{sub2_req['convo_chars']:,} chars sent vs {len(json.dumps(sub2)):,} held")
+    check(results, "an unrelated session is NOT affected",
+          o2_req["carries_summary"]
+          and o2_req["convo_chars"] < len(json.dumps(o2)) * 0.75,
+          f"{o2_req['convo_chars']:,} chars sent vs {len(json.dumps(o2)):,} held")
+    check(results, "subagent follows the parent back on",
+          sub3_req["carries_summary"]
+          and sub3_req["convo_chars"] < len(json.dumps(sub3)) * 0.75,
+          f"{sub3_req['convo_chars']:,} chars sent vs {len(json.dumps(sub3)):,} held")
+    return sum(1 for ok in results if not ok)
+
+
+def latch_unit(root):
+    """The latch survives losing the marker, and is bounded."""
+    print("  session latch")
+    home = fake_home(os.path.join(root, "latch"), {})
+    probe = (
+        "import server;"
+        "s=server.SessionToggleStore(limit=3);"
+        "s.set('a', True); s.set('b', False);"
+        "r=[s.get('a') is True, s.get('b') is False, s.get('zz') is None,"
+        " s.get('') is None, s.set('a', True) is False, s.set('a', False) is True];"
+        "s.set('c', True); s.set('d', True); s.set('e', True);"
+        "r.append(len(s) == 3);"
+        "r.append(s.get('b') is None);"
+        "s2=server.SessionToggleStore();"
+        "s2.set('', True); r.append(len(s2) == 0);"
+        "print(r)"
+    )
+    out = subprocess.run([sys.executable, "-c", probe], cwd=PROXY,
+                         capture_output=True, text=True, env=clean_env(home))
+    if out.returncode != 0:
+        print("    FAIL  latch probe crashed")
+        print("          " + (out.stderr.strip().splitlines() or ["?"])[-1])
+        return 1
+    got = eval(out.stdout.strip().splitlines()[-1])
+    names = ["latched value reads back (off)", "latched value reads back (on)",
+             "unknown session -> None", "empty session id -> None",
+             "unchanged set reports no change", "changed set reports a change",
+             "bounded at the limit", "oldest session evicted first",
+             "empty session id is never stored"]
+    results = []
+    for name, ok in zip(names, got):
+        check(results, name, ok)
+    return sum(1 for ok in results if not ok)
+
+
 def main():
     root = tempfile.mkdtemp(prefix="rolling-context-toggle-")
     try:
@@ -527,6 +641,10 @@ def main():
         failures += session_scope(root)
         print()
         failures += config_default(root)
+        print()
+        failures += latch_unit(root)
+        print()
+        failures += subagent_inheritance(root)
     finally:
         shutil.rmtree(root, ignore_errors=True)
 

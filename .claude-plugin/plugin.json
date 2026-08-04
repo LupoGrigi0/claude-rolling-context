@@ -1,7 +1,7 @@
 {
   "name": "rolling-context",
-  "version": "1.10.0",
-  "description": "Rolling context compression - old messages get summarized, recent messages stay verbatim. Never hit the context wall. Toggle it off per session with /rolling-context:off (or --global) when a session wants the full history; nothing already compressed is thrown away.",
+  "version": "1.11.0",
+  "description": "Rolling context compression - old messages get summarized, recent messages stay verbatim. Never hit the context wall. Toggle it off per session with /rolling-context:off (or --global) when a session wants the full history - subagents follow the session that spawned them, and nothing already compressed is thrown away.",
   "author": {
     "name": "NodeNestor"
   },
