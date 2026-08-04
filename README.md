@@ -208,6 +208,54 @@ This means:
 - **No state to corrupt** — restart the proxy anytime, worst case is one extra compression cycle
 - **Claude Code sees nothing different** — the proxy is invisible, JSONL transcripts are unmodified
 
+## Turning it off
+
+Some sessions want the whole repo in view — deep planning, refactor design, an
+optimization pass where the model should see everything. Compression is not
+what you want there.
+
+```
+/rolling-context:off      # this conversation only, other sessions unaffected
+/rolling-context:on       # back on
+
+/rolling-context:off --global   # every session on this machine
+/rolling-context:on --global
+
+/rolling-context:status   # what is the machine-wide setting?
+```
+
+Both scopes apply from the **next request** — no Claude Code restart, no proxy
+restart. Machine-wide off wins over a session that opted in.
+
+**Turning it off never throws work away.** Compressions already computed stay in
+the proxy's memory; they just stop being injected, and no new compression is
+triggered. Turn it back on and the session resumes with everything it had, so a
+conversation that ran hot before the toggle never pays to compress that history
+twice.
+
+### Changing the default
+
+A fresh install compresses out of the box. If you would rather opt in per
+session, flip the default in `~/.claude-rolling-context/config.json`:
+
+```json
+{ "enabled": false }
+```
+
+Sessions that have not run `/rolling-context:off` or `:on` follow this;
+an explicit toggle in a session always wins over it. A missing or malformed
+config falls back to on, so a typo can never silently disable your install.
+`/rolling-context:status` prints the current default and the config path.
+
+Two things worth knowing:
+
+- The session scope rides in the conversation itself rather than in any state
+  file, which is what keeps the proxy sessionless. If a conversation is
+  `/compact`ed the marker can be summarized away, and that session falls back
+  to the machine-wide setting — just run `/rolling-context:off` again.
+- Subagents get their own transcripts, so a session-scoped off does not reach
+  them. Use `--global` if you want subagents uncompressed too.
+
 ## Configuration
 
 All settings via environment variables (all optional — defaults work great):
@@ -223,6 +271,8 @@ All settings via environment variables (all optional — defaults work great):
 | `ROLLING_CONTEXT_SUMMARIZER_KEY` | *(uses Claude Code auth)* | API key for custom summarizer endpoint |
 | `ROLLING_CONTEXT_SUMMARIZER_FORMAT` | `anthropic` | `openai` = /v1/chat/completions for OpenAI-compatible endpoints |
 | `ROLLING_CONTEXT_FAILURE_COOLDOWN` | `300` | Seconds to wait before retrying after a failed compression |
+| `ROLLING_CONTEXT_DISABLE` | *(unset)* | `1` = off everywhere; wins over `/rolling-context:on --global` |
+| `ROLLING_CONTEXT_HOME` | `~/.claude-rolling-context` | Where the machine-wide off flag lives |
 
 ## Proxy Chaining
 

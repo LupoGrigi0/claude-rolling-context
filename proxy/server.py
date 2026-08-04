@@ -25,6 +25,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
 import endpoints
+import switch
 from compressor import RollingCompressor
 
 class FlushFileHandler(logging.FileHandler):
@@ -113,6 +114,58 @@ _VOLATILE_TAGS_RE = re.compile(
 def _strip_volatile_tags(text: str) -> str:
     """Strip Claude Code's dynamic tags that change between requests."""
     return _VOLATILE_TAGS_RE.sub("", text)
+
+
+# --- per-session toggle (issue #6) ------------------------------------------
+# /rolling-context:off prints a marker; slash command output is inserted into
+# the transcript inside <local-command-stdout>, so every later request in that
+# conversation carries it. Reading the newest marker gives us per-session scope
+# without tracking sessions — the same content recognition the proxy already
+# runs on. Matching is confined to <local-command-stdout> blocks so that merely
+# reading switch.py in a conversation (a tool result, not a command block)
+# cannot toggle anything.
+
+_STDOUT_BLOCK_RE = re.compile(
+    r"<local-command-stdout>(.*?)</local-command-stdout>", re.DOTALL
+)
+_SESSION_MARKER_RE = re.compile(r"<<rolling-context:session-(off|on)>>")
+
+
+def _iter_text(content):
+    """Yield the plain-text pieces of a message without serializing it.
+
+    Deliberately not json.dumps — this runs over the whole history on every
+    request, and the marker only ever lives in text.
+    """
+    if isinstance(content, str):
+        yield content
+    elif isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict):
+                text = block.get("text")
+                if isinstance(text, str):
+                    yield text
+                nested = block.get("content")
+                if isinstance(nested, (str, list)):
+                    yield from _iter_text(nested)
+
+
+def _session_disabled(messages: list):
+    """Newest /rolling-context session marker in this conversation.
+
+    Returns True (off), False (on), or None (never set — follow the machine
+    setting). Scans newest-first so the last toggle wins.
+    """
+    for msg in reversed(messages):
+        for text in _iter_text(msg.get("content", "")):
+            # Cheap reject first: the vast majority of messages never match.
+            if "rolling-context:session-" not in text:
+                continue
+            for block in reversed(_STDOUT_BLOCK_RE.findall(text)):
+                found = _SESSION_MARKER_RE.findall(block)
+                if found:
+                    return found[-1] == "off"
+    return None
 
 
 def _normalize_content(content):
@@ -475,6 +528,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             "status": "ok",
             "last_injection_ts": _last_injection_ts,
             "stored_compressions": len(store.compressions),
+            "enabled": not switch.is_disabled(),
         }
         body = json.dumps(data).encode()
         self.send_response(200)
@@ -491,6 +545,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
         from compressor import NATIVE_MODE, SUMMARIZER_FORMAT
         data = {
             "status": "ok",
+            "enabled": not switch.is_disabled(),
+            "default_enabled": switch.config_default_enabled(),
             "trigger_tokens": TRIGGER_TOKENS,
             "target_tokens": TARGET_TOKENS,
             "summarizer_model": SUMMARIZER_MODEL or "(session model)",
@@ -540,6 +596,27 @@ class ProxyHandler(BaseHTTPRequestHandler):
             f"messages={len(messages)} chars={msg_chars:,}"
         )
 
+        # /rolling-context:off — resolved fresh per request so the toggle is
+        # live. Machine-wide off wins; otherwise this conversation's own marker
+        # decides, and falls back to on. Disabled means "stop acting", not
+        # "forget": stored compressions are left intact so turning back on
+        # resumes without recompressing.
+        # Precedence: env kill-switch, then an explicit machine-wide off, then
+        # this conversation's own marker, then the configured default.
+        if switch.is_disabled():
+            disabled, scope = True, "machine-wide"
+        else:
+            session_state = _session_disabled(messages)
+            if session_state is None:
+                disabled, scope = not switch.config_default_enabled(), "config default"
+            else:
+                disabled, scope = session_state, "this session"
+        if disabled:
+            log.info(
+                f"[MSG] rolling-context is OFF ({scope}) — passing through "
+                f"untouched ({len(store.compressions)} compression(s) kept for later)"
+            )
+
         # Promote any pending compressions
         for entry in store.compressions:
             if entry["pending"] is not None:
@@ -553,7 +630,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 )
 
         # Scan: do any stored compressions match this request's messages?
-        match, match_end = store.find_match(msg_hashes, messages)
+        # Skipped entirely while off — find_match is also the only caller that
+        # prunes no-longer-helpful entries, so not running it keeps the store
+        # exactly as it was.
+        match, match_end = (None, -1) if disabled else store.find_match(msg_hashes, messages)
         injected = False
 
         if match and match["prefix"] is not None and match_end > 0:
@@ -717,7 +797,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
             # Trigger compression based on token count. The minimum message
             # count keeps us from "compressing" sessions whose bulk is the
             # system prompt / first-message context, which we can't remove.
-            if total_input > 0 and total_input > TRIGGER_TOKENS and len(current_messages) >= 6:
+            if disabled:
+                if total_input > TRIGGER_TOKENS:
+                    log.info(
+                        f"[MSG] {total_input:,} tokens is over trigger, but "
+                        f"rolling-context is OFF — not compressing"
+                    )
+            elif total_input > 0 and total_input > TRIGGER_TOKENS and len(current_messages) >= 6:
                 already_compressing = any(
                     e["thread"] is not None and e["thread"].is_alive()
                     for e in store.compressions
