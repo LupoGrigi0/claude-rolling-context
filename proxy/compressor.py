@@ -55,6 +55,10 @@ NATIVE_MODE = not (SUMMARIZER_URL_SET or SUMMARIZER_API_KEY or SUMMARIZER_FORMAT
 # flattened summary rather than burning the whole compaction on one 400.
 NATIVE_FALLBACK = not endpoints.is_anthropic(SUMMARIZER_BASE_URL)
 LEGACY_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+# Ferry curation mode: replace LLM summarization with deterministic
+# curation (verbatim archive + pointer index + carry render). No LLM call.
+# See proxy/curation.py and github.com/LupoGrigi0/ferry DESIGN-REV2.md.
+CURATION_MODE = (os.environ.get("ROLLING_CONTEXT_CURATION") or "").lower()
 
 ssl_ctx = ssl.create_default_context()
 
@@ -533,6 +537,34 @@ class RollingCompressor:
             return None
 
         recent_messages = messages[keep_from_idx:]
+
+        if CURATION_MODE == "ferry":
+            # Deterministic curation — no LLM. Same envelope/markers, so
+            # store keying and rolling merge work unchanged.
+            from curation import (FerryCurationProducer,
+                                  CURATION_FRAMING_USER, CURATION_FRAMING_ACK)
+            if not hasattr(self, "_curation_producer"):
+                self._curation_producer = FerryCurationProducer()
+            existing_payload = (self._extract_summary(messages)
+                                if has_existing_summary else "")
+            new_summary = self._curation_producer.produce(
+                messages, start_idx, keep_from_idx, existing_payload)
+            if not new_summary:
+                log.info("Nothing to curate")
+                return None
+            summary_message = {
+                "role": "user",
+                "content": (f"{SUMMARY_MARKER}\n{new_summary}\n"
+                            f"{SUMMARY_END_MARKER}\n\n{CURATION_FRAMING_USER}"),
+            }
+            ack_message = {"role": "assistant", "content": CURATION_FRAMING_ACK}
+            compressed = [summary_message, ack_message] + recent_messages
+            self.compression_count += 1
+            log.info(
+                f"Curation #{self.compression_count}: "
+                f"{self._count_chars(messages):,} -> "
+                f"{self._count_chars(compressed):,} chars (deterministic)")
+            return compressed
 
         use_native = NATIVE_MODE and payload is not None
         if use_native:
