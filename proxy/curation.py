@@ -225,9 +225,12 @@ CURATION_FRAMING_USER = (
     "The above is your carried context: verbatim identity blocks and a "
     "pointer index to archived turns (stored verbatim, fetchable). "
     "Nothing was summarized; earlier turns were moved, not lost. "
-    "Continue from where we left off."
+    "To recall any archived turn in full, run: "
+    "ferry-fetch '<pointer>' (e.g. ferry-fetch 'archive_20260811.jsonl#L3') "
+    "via your Bash tool. Continue from where we left off."
 )
 CURATION_FRAMING_ACK = (
     "I have my carried context — identity verbatim, and the pointer index "
-    "to the archived turns I can fetch when needed. Continuing."
+    "to the archived turns, which I can recall in full with ferry-fetch "
+    "when needed. Continuing."
 )
