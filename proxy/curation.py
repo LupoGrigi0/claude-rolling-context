@@ -143,6 +143,16 @@ class FerryCurationProducer:
                         break
         else:
             text = ""
+        # Skip harness boilerplate: Claude Code prepends <system-reminder>
+        # blocks to user turns, so a naive first-80-chars gist captures
+        # boilerplate instead of the human's words. (Found live: the
+        # planted beacon code sat past a system-reminder prefix — first
+        # ferry crossing, 2026-08-11.)
+        while text.lstrip().startswith("<system-reminder>"):
+            end = text.find("</system-reminder>")
+            if end == -1:
+                break
+            text = text[end + len("</system-reminder>"):]
         gist = " ".join(text.split())  # collapse newlines for a one-line slug
         return gist[:GIST_CHARS]
 

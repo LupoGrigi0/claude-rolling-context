@@ -170,5 +170,16 @@ if result:
     check("honest framing (no 'summary of our earlier conversation' claim)",
           "moved, not lost" in result[0]["content"])
 
+# ── regression: first-live-crossing finding (2026-08-11) ────────────────
+# Claude Code prepends <system-reminder> blocks to user turns; a naive
+# first-80-chars gist captured boilerplate and buried the planted beacon
+# code. Gists must skip harness boilerplate.
+print("\nlive-crossing regression:")
+boiler = ("<system-reminder>\nAvailable agent types\n</system-reminder>\n"
+          "Important context to remember: The harbor beacon code is MOONRISE-47.")
+check("gist skips system-reminder boilerplate",
+      FerryCurationProducer._gist(boiler).startswith(
+          "Important context to remember: The harbor beacon code"))
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)
