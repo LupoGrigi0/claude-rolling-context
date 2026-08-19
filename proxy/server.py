@@ -267,9 +267,55 @@ class CompressionStore:
     match a stored compression, replaces them with the prefix.
     """
 
-    def __init__(self):
+    def __init__(self, persist_path=None):
         self._lock = threading.Lock()
         self._compressions = []  # list of compression entries
+        # Ferry: restart-safety. Without this, a proxy restart forgets the
+        # match table, so the next request ships the client's FULL history
+        # (over budget) and re-curates from scratch — re-archiving turns and
+        # losing the pointer index that lived only in the injected prefix.
+        # Only resolved entries (original_hashes + prefix) are persisted;
+        # thread/pending/_debug are transient. Off unless a path is given, so
+        # default (non-Ferry) mode is byte-identical to upstream.
+        self._persist_path = persist_path
+        if persist_path:
+            self._load()
+
+    def _load(self):
+        try:
+            with open(self._persist_path, encoding="utf-8") as f:
+                saved = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError, ValueError):
+            return
+        for e in saved:
+            if e.get("prefix") and e.get("original_hashes"):
+                self._compressions.append({
+                    "original_hashes": e["original_hashes"],
+                    "prefix": e["prefix"],
+                    "pending": None, "pending_hashes": None, "thread": None,
+                })
+        if self._compressions:
+            log.info(f"[FERRY] restored {len(self._compressions)} compression(s) "
+                     f"from {self._persist_path}")
+
+    def persist(self):
+        """Atomically write resolved entries. Call after any prefix change."""
+        if not self._persist_path:
+            return
+        with self._lock:
+            snapshot = [{"original_hashes": e["original_hashes"], "prefix": e["prefix"]}
+                        for e in self._compressions if e.get("prefix")]
+        tmp = f"{self._persist_path}.tmp.{os.getpid()}"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(snapshot, f, ensure_ascii=False)
+            os.replace(tmp, self._persist_path)
+        except OSError as err:
+            log.warning(f"[FERRY] persist failed: {err}")
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
     def find_match(self, msg_hashes: list, messages: list = None):
         """Find a compression whose hash chain appears in msg_hashes.
@@ -338,13 +384,22 @@ class CompressionStore:
     def remove(self, entry: dict):
         with self._lock:
             self._compressions = [e for e in self._compressions if e is not entry]
+        self.persist()  # Ferry: keep the durable snapshot in sync (no-op off-mode)
 
     @property
     def compressions(self):
         return self._compressions
 
 
-store = CompressionStore()
+# Ferry: persist proxy state only in curation mode (default mode stays
+# in-memory-only, byte-identical to upstream). Path derives from FERRY_DATA.
+_ferry_curation = (os.environ.get("ROLLING_CONTEXT_CURATION") or "").lower() == "ferry"
+_ferry_data = os.environ.get("FERRY_DATA") or os.path.join(
+    os.path.expanduser("~"), "ferry-data")
+_persist_path = os.path.join(_ferry_data, "proxy-state.json") if _ferry_curation else None
+if _persist_path:
+    os.makedirs(_ferry_data, exist_ok=True)
+store = CompressionStore(persist_path=_persist_path)
 
 
 # ---------------------------------------------------------------------------
@@ -691,16 +746,20 @@ class ProxyHandler(BaseHTTPRequestHandler):
             )
 
         # Promote any pending compressions
+        promoted = False
         for entry in store.compressions:
             if entry["pending"] is not None:
                 entry["prefix"] = entry["pending"]
                 entry["original_hashes"] = entry["pending_hashes"]
                 entry["pending"] = None
                 entry["pending_hashes"] = None
+                promoted = True
                 log.info(
                     f"[MSG] Compression promoted: {len(entry['prefix'])} prefix messages "
                     f"replacing {len(entry['original_hashes'])} originals"
                 )
+        if promoted:
+            store.persist()  # Ferry: durable across restart (no-op off-mode)
 
         # Scan: do any stored compressions match this request's messages?
         # Skipped entirely while off — find_match is also the only caller that
