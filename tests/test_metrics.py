@@ -493,7 +493,15 @@ check("archive_write note carries the pointer span",
 check("curation rows leave context_tokens blank when nobody passed it",
       cur and cur[0]["context_tokens"] == "", cur)
 
-prod.produce(MSGS, 0, 5)     # second cycle, same producer
+# A real second cycle evicts DIFFERENT turns — eviction removes turns from
+# context, so the same batch cannot legitimately be evicted twice. Re-running
+# produce() with identical messages is a REPLAY, not a cycle, and archive
+# writes are now idempotent against exactly that (the Phase D restart race).
+# This fixture used to replay and assert growth; it was invented, and the
+# dedupe caught it.
+MSGS2 = [{"role": "user", "content": f"second cycle turn {i} — new material "
+          f"that did not exist during cycle one"} for i in range(5)] + MSGS[5:]
+prod.produce(MSGS2, 0, 5)    # second cycle, same producer, NEW turns
 mrows2 = [dict(zip(HEADER, row)) for row in read_rows(e2e / "metrics.csv")[1:]]
 aw2 = [r for r in mrows2 if r["event"] == "archive_write"]
 check("cycle 2 is numbered 2", len(aw2) == 2 and aw2[1]["cycle"] == "2", aw2)
@@ -740,6 +748,35 @@ for k, v in saved_env.items():
         os.environ.pop(k, None)
     else:
         os.environ[k] = v
+
+# ── idempotent archive writes seen from the producer level ──────────────
+# Isolated producer + directory ON PURPOSE: an extra produce() advances the
+# shared cycle counter, and the first version of this check did exactly that
+# and broke four positional assertions downstream. Test fixtures must not
+# perturb the state other tests measure.
+#
+# ASSUMPTION, stated because it is load-bearing and not proven: a
+# byte-identical TRAILING batch can only arise from a restart replay, because
+# eviction removes turns from context and they cannot be evicted twice. If
+# that ever stops holding, dedupe would swallow real content.
+print("\nidempotent archive (producer level):")
+_rd = Path(tempfile.mkdtemp())
+_rp = FerryCurationProducer(_rd)
+_RM = [{"role": "user", "content": f"replay turn {i} with enough words to be "
+        f"a real looking evicted turn"} for i in range(5)] + \
+      [{"role": "user", "content": "kept"}]
+_rp.produce(_RM, 0, 5)
+_before = sum(f.stat().st_size for f in (_rd / "archive").glob("archive_*.jsonl"))
+_rp.produce(_RM, 0, 5)          # byte-identical replay
+_after = sum(f.stat().st_size for f in (_rd / "archive").glob("archive_*.jsonl"))
+check("a byte-identical REPLAY does not grow the archive (the Phase D "
+      "restart race, closed)", _after == _before, (_before, _after))
+_new = [{"role": "user", "content": "genuinely new material for cycle two"}] * 5 + \
+       [{"role": "user", "content": "kept"}]
+_rp.produce(_new, 0, 5)
+_grown = sum(f.stat().st_size for f in (_rd / "archive").glob("archive_*.jsonl"))
+check("a genuinely new batch still grows the archive", _grown > _after,
+      (_after, _grown))
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)
