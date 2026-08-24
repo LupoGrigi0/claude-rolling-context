@@ -10,3 +10,5 @@ test/
 # Written into the working directory by unsloth on import. Nothing to do with
 # this project; a stray training session with the wrong cwd left it here once.
 unsloth_compiled_cache/
+__pycache__/
+*.pyc

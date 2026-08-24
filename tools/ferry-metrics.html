@@ -1,0 +1,1319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Ferry — live context metrics</title>
+<style>
+/* ---------------------------------------------------------------------------
+   Ferry live metrics. One file, no CDN, no fonts, no libraries.
+   Palette: dataviz reference instance (blue slot1 / green slot2 / magenta slot3),
+   validated all-pairs in BOTH modes. Light magenta is 2.62:1 on the light
+   surface -> the relief rule applies, which is why every curation rule carries a
+   visible direct label and why the table view exists. Do not "fix" the magenta
+   by eyeballing a darker hex; re-run scripts/validate_palette.js instead.
+--------------------------------------------------------------------------- */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+html { -webkit-text-size-adjust: 100%; background: var(--plane); }
+
+/* The tokens live on :root, not on .viz-root. This page IS the visualisation,
+   so <body> itself needs --plane and --text-primary: with the tokens scoped to
+   an inner element, body's `color: var(--text-primary)` resolved against a
+   variable that did not exist there — the masthead went black-on-black in dark
+   mode and the page under the content stayed white. */
+:root {
+  color-scheme: light;
+  --plane:          #f9f9f7;
+  --surface-1:      #fcfcfb;
+  --text-primary:   #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted:     #898781;
+  --grid:           #e1e0d9;
+  --axis:           #c3c2b7;
+  --border:         rgba(11,11,11,0.10);
+  --wash:           rgba(11,11,11,0.04);
+  --s-ctx:          #2a78d6;   /* categorical slot 1 — context / tokens added */
+  --s-evict:        #e87ba4;   /* categorical slot 3 — curation / tokens leaving */
+  --s-arch:         #008300;   /* categorical slot 2 — archive on disk */
+  --track:          #cde2fb;   /* meter track: lighter step of the same blue ramp */
+  --good:           #0ca30c;
+  --warning:        #fab219;
+  --critical:       #d03b3b;
+  --shadow:         0 1px 2px rgba(11,11,11,0.06);
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --plane:          #0d0d0d;
+    --surface-1:      #1a1a19;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #898781;
+    --grid:           #2c2c2a;
+    --axis:           #383835;
+    --border:         rgba(255,255,255,0.10);
+    --wash:           rgba(255,255,255,0.06);
+    --s-ctx:          #3987e5;
+    --s-evict:        #d55181;
+    --s-arch:         #008300;
+    --track:          #184f95;
+    --shadow:         none;
+  }
+}
+/* Stamped by the theme button. Higher specificity than the media block above,
+   so an explicit choice wins in BOTH directions. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --plane:          #0d0d0d;
+  --surface-1:      #1a1a19;
+  --text-primary:   #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted:     #898781;
+  --grid:           #2c2c2a;
+  --axis:           #383835;
+  --border:         rgba(255,255,255,0.10);
+  --wash:           rgba(255,255,255,0.06);
+  --s-ctx:          #3987e5;
+  --s-evict:        #d55181;
+  --s-arch:         #008300;
+  --track:          #184f95;
+  --shadow:         none;
+}
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--plane);
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.45;
+}
+.viz-root {
+  background: var(--plane);
+  min-height: 100vh;
+  padding: 14px 12px 40px;
+  max-width: 1100px;
+  margin: 0 auto;
+  overflow-x: hidden;          /* the page never scrolls sideways */
+}
+
+/* ---- masthead ---- */
+.masthead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+.masthead h1 { font-size: 15px; font-weight: 600; margin: 0; letter-spacing: .01em; }
+.masthead .sub { font-size: 12px; color: var(--text-muted); }
+.masthead .spacer { flex: 1 1 auto; }
+.pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11px; color: var(--text-secondary);
+  border: 1px solid var(--border); border-radius: 999px;
+  padding: 3px 9px; background: var(--surface-1);
+}
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-muted); flex: none; }
+.dot.live { background: var(--good); }
+.dot.stale { background: var(--warning); }
+.dot.err  { background: var(--critical); }
+button.ghost {
+  font: inherit; font-size: 11px; color: var(--text-secondary);
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 999px; padding: 3px 10px; cursor: pointer;
+}
+button.ghost:hover { background: var(--wash); }
+button.ghost:focus-visible { outline: 2px solid var(--s-ctx); outline-offset: 2px; }
+
+/* ---- banner ---- */
+.banner {
+  display: none; margin: 8px 0 0; padding: 8px 11px; border-radius: 8px;
+  font-size: 12.5px; border: 1px solid var(--border); background: var(--surface-1);
+  color: var(--text-secondary);
+}
+.banner.show { display: block; }
+.banner .tag { font-weight: 600; color: var(--text-primary); }
+.banner.warn { border-color: var(--warning); }
+.banner.err  { border-color: var(--critical); }
+
+/* ---- stat strip ---- */
+.tiles {
+  display: grid; gap: 8px; margin: 10px 0 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+@media (min-width: 620px) { .tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+/* Seven columns, because the hero spans two — six wraps the last tile onto a
+   lonely second row. The 1040px floor is measured, not taste: at 900px seven
+   columns squeezed the tiles until "194,701" rendered as "194,7…", and a
+   truncated number on a metrics dashboard is worse than no number. */
+@media (min-width: 1040px) { .tiles { grid-template-columns: repeat(7, minmax(0, 1fr)); } }
+.tile {
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px;
+  padding: 9px 11px 10px; box-shadow: var(--shadow); min-width: 0;
+}
+.tile .label {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tile .value {
+  font-size: 21px; font-weight: 600; color: var(--text-primary);
+  margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  /* proportional figures on standalone values — tabular-nums only in the table */
+}
+.tile.hero { grid-column: span 2; }
+.tile.hero .value { font-size: 34px; line-height: 1.1; letter-spacing: -.01em; }
+@media (min-width: 900px) { .tile.hero { grid-column: span 2; } }
+.tile .foot { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
+.meter { height: 5px; border-radius: 3px; background: var(--track); margin-top: 7px; overflow: hidden; }
+.meter > i { display: block; height: 100%; width: 0; background: var(--s-ctx); border-radius: 3px; }
+.meter.warn > i { background: var(--warning); }
+.meter.crit > i { background: var(--critical); }
+.state { font-size: 11px; color: var(--text-secondary); margin-top: 4px; display: flex; align-items: center; gap: 5px; }
+.state .glyph { font-size: 11px; line-height: 1; }
+
+/* ---- chart card ---- */
+.card {
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 10px 6px; box-shadow: var(--shadow); position: relative;
+}
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 0 2px 6px; }
+.legend .key { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-secondary); }
+.legend .swatch { width: 14px; height: 2px; border-radius: 1px; flex: none; }
+.legend .swatch.rect { height: 9px; width: 9px; border-radius: 2px; }
+.legend .swatch.dash { height: 0; border-top: 1px solid var(--axis); width: 14px; }
+.plotwrap { position: relative; }
+.plotwrap.stale { opacity: .55; }       /* refetch keeps the frame — no skeleton flash */
+svg { display: block; width: 100%; height: auto; touch-action: pan-y; }
+svg text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+
+/* ---- tooltip ---- */
+.tip {
+  /* left/top are seeded here on purpose: with only `transform` and no offsets
+     the un-positioned tooltip parks at its static position and sticks out past
+     the left edge of the card before the first pointer event. */
+  position: absolute; left: 50%; top: 120px;
+  pointer-events: none; z-index: 5; opacity: 0;
+  transform: translate(-50%, -100%);
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
+  padding: 7px 9px; min-width: 132px; box-shadow: 0 3px 10px rgba(0,0,0,.14);
+  font-size: 12px; transition: opacity .08s linear;
+}
+.tip.on { opacity: 1; }
+.tip .when { font-size: 10.5px; color: var(--text-muted); letter-spacing: .03em; }
+.tip .ev { font-size: 10.5px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .06em; margin-top: 1px; }
+.tip .row { display: flex; align-items: baseline; gap: 7px; margin-top: 4px; white-space: nowrap; }
+.tip .k { width: 12px; height: 2px; border-radius: 1px; flex: none; position: relative; top: -3px; }
+.tip .v { font-weight: 600; font-variant-numeric: tabular-nums; }
+.tip .n { color: var(--text-secondary); font-size: 11px; }
+.tip .note { margin-top: 4px; font-size: 11px; color: var(--text-secondary); word-break: break-word; }
+
+/* ---- table view (the WCAG-clean twin; also the relief for light magenta) ---- */
+details.tableview { margin-top: 12px; }
+details.tableview > summary {
+  cursor: pointer; font-size: 12px; color: var(--text-secondary);
+  padding: 6px 2px; list-style: none; display: flex; align-items: center; gap: 6px;
+}
+details.tableview > summary::-webkit-details-marker { display: none; }
+details.tableview > summary::before { content: "▸"; font-size: 10px; color: var(--text-muted); }
+details.tableview[open] > summary::before { content: "▾"; }
+.tablescroll {
+  overflow-x: auto; -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface-1);
+}
+table { border-collapse: collapse; width: 100%; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 5px 8px; white-space: nowrap; border-bottom: 1px solid var(--grid); }
+th { color: var(--text-muted); font-weight: 500; text-transform: uppercase; letter-spacing: .05em; font-size: 10px; position: sticky; top: 0; background: var(--surface-1); }
+td:first-child, th:first-child, td.l, th.l { text-align: left; }
+td.note { max-width: 260px; overflow: hidden; text-overflow: ellipsis; color: var(--text-secondary); }
+tbody tr:last-child td { border-bottom: 0; }
+.foot-note { font-size: 11px; color: var(--text-muted); margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="viz-root" id="root">
+
+  <div class="masthead">
+    <h1>Ferry — context metrics</h1>
+    <span class="sub" id="sub">moved, not lost</span>
+    <span class="spacer"></span>
+    <span class="pill"><span class="dot" id="livedot"></span><span id="livetxt">connecting…</span></span>
+    <button class="ghost" id="themebtn" type="button" aria-label="Toggle colour theme">theme</button>
+  </div>
+
+  <div class="banner" id="banner" role="status" aria-live="polite"></div>
+
+  <div class="tiles" id="tiles">
+    <div class="tile hero">
+      <div class="label">Context tokens</div>
+      <div class="value" id="t-ctx">—</div>
+      <div class="meter" id="t-meter"><i></i></div>
+      <div class="state" id="t-state"></div>
+    </div>
+    <div class="tile"><div class="label">% of window</div><div class="value" id="t-pct">—</div><div class="foot" id="t-win"></div></div>
+    <div class="tile"><div class="label">Curation cycles</div><div class="value" id="t-cyc">—</div><div class="foot" id="t-cycfoot"></div></div>
+    <div class="tile"><div class="label">Total evicted</div><div class="value" id="t-evict">—</div><div class="foot" id="t-evictfoot"></div></div>
+    <div class="tile"><div class="label">Archive on disk</div><div class="value" id="t-arch">—</div><div class="foot" id="t-archfoot"></div></div>
+    <div class="tile"><div class="label">Last event</div><div class="value" id="t-age">—</div><div class="foot" id="t-agefoot"></div></div>
+  </div>
+
+  <div class="card">
+    <div class="legend">
+      <span class="key"><span class="swatch" style="background:var(--s-ctx)"></span>context tokens · tokens added</span>
+      <span class="key"><span class="swatch" style="background:var(--s-evict)"></span>curation · tokens evicted</span>
+      <span class="key"><span class="swatch" style="background:var(--s-arch)"></span>archive bytes on disk</span>
+      <span class="key"><span class="swatch dash"></span>trigger / target</span>
+    </div>
+    <div class="plotwrap" id="plotwrap">
+      <svg id="svg" role="img" aria-label="Ferry context fill, tokens in, tokens evicted and archive growth over time"></svg>
+      <div class="tip" id="tip" role="tooltip" aria-hidden="true"></div>
+    </div>
+  </div>
+
+  <details class="tableview">
+    <summary id="tablesummary">Table view — every logged event</summary>
+    <div class="tablescroll">
+      <table>
+        <thead><tr>
+          <th class="l">time</th><th class="l">event</th><th>cycle</th><th>context</th><th>in</th>
+          <th>evicted</th><th>arch lines</th><th>arch bytes</th><th>carry</th><th class="l">note</th>
+        </tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+    <div class="foot-note" id="tablefoot"></div>
+  </details>
+
+  <div class="foot-note" id="srcfoot"></div>
+</div>
+
+<script>
+/* ===========================================================================
+   Everything between the FM-CORE markers is PURE: no DOM, no globals beyond FM.
+   tools/check-parser.mjs slices this block straight out of the HTML and runs it
+   under node, so the tested parser is byte-for-byte the parser the page ships.
+   Do not dereference `document`/`window` in here. The markers must stay on
+   their own lines — the extractor cuts on the line boundary.
+   =========================================================================== */
+// FM-CORE-BEGIN
+var FM = (function () {
+  "use strict";
+
+  var HEADER = ["ts_iso","event","cycle","context_tokens","tokens_in","tokens_evicted",
+                "archive_lines","archive_bytes","carry_chars","model","window","note"];
+
+  /* ---- RFC4180-ish scanner ------------------------------------------------
+     Written as a character scanner rather than text.split("\n") because a note
+     field is allowed to contain a comma, a quote, or (legally) a newline — a
+     naive line split silently shears those rows into garbage. It also has to
+     survive being read WHILE the collector appends: the tail of the file can be
+     half a record, or can stop inside an open quote. */
+  function parseCSV(text) {
+    var records = [], record = [], field = "";
+    var i = 0, n = text.length, inQuotes = false, endedWithNewline = true;
+    while (i < n) {
+      var c = text.charAt(i);
+      if (inQuotes) {
+        if (c === '"') {
+          if (text.charAt(i + 1) === '"') { field += '"'; i += 2; continue; }
+          inQuotes = false; i++; continue;
+        }
+        field += c; i++; continue;
+      }
+      if (c === '"') { inQuotes = true; i++; continue; }
+      if (c === ",") { record.push(field); field = ""; i++; continue; }
+      if (c === "\r") { i++; continue; }
+      if (c === "\n") { record.push(field); records.push(record); record = []; field = ""; i++; endedWithNewline = true; continue; }
+      field += c; i++;
+    }
+    var unterminatedQuote = false;
+    if (inQuotes) {
+      // Torn inside a quoted field: the whole trailing partial record is dropped.
+      unterminatedQuote = true;
+      endedWithNewline = false;
+    } else if (field !== "" || record.length) {
+      record.push(field); records.push(record); endedWithNewline = false;
+    }
+    return { records: records, endedWithNewline: endedWithNewline, unterminatedQuote: unterminatedQuote };
+  }
+
+  /* Empty means EMPTY, not zero. A blank tokens_evicted must never be plotted
+     as a 0-height bar — that would read as "a curation that evicted nothing". */
+  function num(s) {
+    if (s === null || s === undefined) return null;
+    var t = String(s).trim();
+    if (t === "") return null;
+    if (!/^[+-]?(\d+(\.\d+)?|\.\d+)([eE][+-]?\d+)?$/.test(t)) return null;
+    var v = Number(t);
+    return isFinite(v) ? v : null;
+  }
+
+  /* A context window is a POSITIVE number of tokens, or it is no window at all.
+     (Yes, that phrasing is deliberate: check-parser.mjs guards FM-CORE against
+     DOM access with /window\s*\./, so even a comment must not end a sentence on
+     the word.) The column is blank on virtually every real log — nothing in
+     the API reports it, so it only appears when FERRY_WINDOW was exported by
+     hand, which is exactly why the one column a human types by hand must be
+     sanity-checked before it is ever used as a divisor. Before
+     this guard, window=-1 rendered "% of window: -5000000.0%" and a footer
+     reading "of -1-token window", stated as confidently as a real figure.
+     0, negative and junk all mean the same thing: we were not told. */
+  function posNum(s) {
+    var v = num(s);
+    return (v !== null && v > 0) ? v : null;
+  }
+
+  function parseTs(s) {
+    if (s === null || s === undefined) return null;
+    var t = String(s).trim();
+    if (!t) return null;
+    var v = Date.parse(t);
+    if (!isFinite(v)) {
+      // "2026-08-04 12:00:00" (space instead of T) shows up in hand-written CSVs.
+      v = Date.parse(t.replace(" ", "T"));
+    }
+    return isFinite(v) ? v : null;
+  }
+
+  /* parseMetrics -> { state, rows, ... }
+     state: "empty" | "noheader" | "headeronly" | "ok"   (never throws) */
+  function parseMetrics(text) {
+    var out = { state: "empty", rows: [], skipped: 0, torn: false, missingCols: [], extraCols: [], badTs: 0 };
+    if (typeof text !== "string" || text.replace(/^﻿/, "").trim() === "") return out;
+
+    var scan = parseCSV(text.replace(/^﻿/, ""));
+    var recs = scan.records;
+    if (!recs.length) return out;
+
+    var head = recs[0].map(function (h) { return String(h).trim().toLowerCase(); });
+    if (head.indexOf("event") === -1 || head.indexOf("ts_iso") === -1) {
+      out.state = "noheader";
+      return out;
+    }
+    var idx = {};
+    for (var h = 0; h < head.length; h++) if (!(head[h] in idx)) idx[head[h]] = h;
+    HEADER.forEach(function (c) { if (!(c in idx)) out.missingCols.push(c); });
+    head.forEach(function (c) { if (HEADER.indexOf(c) === -1 && c !== "") out.extraCols.push(c); });
+
+    var data = recs.slice(1);
+    // A trailing record that is short AND unterminated is a half-written line.
+    if (data.length && !scan.endedWithNewline) {
+      var last = data[data.length - 1];
+      if (last.length < head.length) { data.pop(); out.torn = true; }
+    }
+    if (scan.unterminatedQuote) out.torn = true;
+
+    function get(rec, name) {
+      var k = idx[name];
+      return (k === undefined || k >= rec.length) ? "" : rec[k];
+    }
+
+    for (var r = 0; r < data.length; r++) {
+      var rec = data[r];
+      if (rec.length === 1 && String(rec[0]).trim() === "") continue;       // blank line
+      if (rec.length < head.length) { out.skipped++; continue; }            // malformed mid-file
+      var ev = String(get(rec, "event")).trim();
+      if (!ev) { out.skipped++; continue; }
+      var ts = String(get(rec, "ts_iso")).trim();
+      var t = parseTs(ts);
+      if (t === null && ts !== "") out.badTs++;
+      out.rows.push({
+        i: out.rows.length,
+        ts: ts, t: t, event: ev,
+        cycle: num(get(rec, "cycle")),
+        ctx: num(get(rec, "context_tokens")),
+        tin: num(get(rec, "tokens_in")),
+        evicted: num(get(rec, "tokens_evicted")),
+        alines: num(get(rec, "archive_lines")),
+        abytes: num(get(rec, "archive_bytes")),
+        carry: num(get(rec, "carry_chars")),
+        model: String(get(rec, "model")).trim(),
+        window: posNum(get(rec, "window")),
+        note: String(get(rec, "note"))
+      });
+    }
+    out.state = out.rows.length ? "ok" : "headeronly";
+    return out;
+  }
+
+  /* ---- shaping -----------------------------------------------------------
+     x is wall-clock when the log has ≥2 distinct parseable timestamps,
+     otherwise event ordinal. Rows with an unparseable ts inherit the previous
+     valid one (the log is append-only, so file order IS chronological). */
+  function shape(parsed) {
+    var rows = parsed.rows || [];
+    var m = {
+      rows: rows, xmode: "index",
+      requests: [], curations: [], archives: [], fetches: [], errors: [], starts: [], restarts: [],
+      trigger: null, target: null, mode: "",
+      stats: {
+        ctx: null, window: null, pct: null, cycles: 0, evicted: null,
+        abytes: null, alines: null, carry: null, model: "", lastT: null, errCount: 0, lastErr: ""
+      }
+    };
+    if (!rows.length) return m;
+
+    var valid = rows.filter(function (r) { return r.t !== null; });
+    var distinct = {}, nd = 0;
+    valid.forEach(function (r) { if (!(r.t in distinct)) { distinct[r.t] = 1; nd++; } });
+    m.xmode = (nd >= 2) ? "time" : "index";
+
+    var carry = valid.length ? valid[0].t : null;
+    rows.forEach(function (r, k) {
+      if (r.t !== null) carry = r.t;
+      r.x = (m.xmode === "time") ? (r.t !== null ? r.t : carry) : k;
+      if (r.x === null || r.x === undefined) r.x = k;
+    });
+
+    rows.forEach(function (r) {
+      if (r.event === "request") m.requests.push(r);
+      else if (r.event === "curation") m.curations.push(r);
+      else if (r.event === "archive_write") m.archives.push(r);
+      else if (r.event === "fetch") m.fetches.push(r);
+      else if (r.event === "error") m.errors.push(r);
+      else if (r.event === "proxy_start") m.starts.push(r);
+      else if (r.event === "restart") m.restarts.push(r);
+    });
+
+    // proxy_start note carries "mode/trigger/target" in a free-form string.
+    // Sniff it defensively: a note we cannot read just means no guide lines.
+    m.starts.concat(m.restarts).forEach(function (r) {
+      var mt = /trigger[\s=:]+([0-9]+)/i.exec(r.note || "");
+      var tg = /target[\s=:]+([0-9]+)/i.exec(r.note || "");
+      var md = /mode[\s=:]+([A-Za-z0-9_.-]+)/i.exec(r.note || "");
+      if (mt) m.trigger = Number(mt[1]);
+      if (tg) m.target = Number(tg[1]);
+      if (md) m.mode = md[1];
+    });
+
+    var s = m.stats;
+    for (var i = rows.length - 1; i >= 0; i--) {
+      var r = rows[i];
+      if (s.ctx === null && r.ctx !== null) s.ctx = r.ctx;
+      if (s.window === null && r.window !== null) s.window = r.window;
+      if (s.abytes === null && r.abytes !== null) s.abytes = r.abytes;
+      if (s.alines === null && r.alines !== null) s.alines = r.alines;
+      if (s.carry === null && r.carry !== null) s.carry = r.carry;
+      if (!s.model && r.model) s.model = r.model;
+    }
+    var evSum = null;
+    m.curations.forEach(function (r) { if (r.evicted !== null) evSum = (evSum === null ? 0 : evSum) + r.evicted; });
+    s.evicted = evSum;
+    var maxCycle = 0;
+    m.curations.forEach(function (r) { if (r.cycle !== null && r.cycle > maxCycle) maxCycle = r.cycle; });
+    s.cycles = Math.max(maxCycle, m.curations.length);
+    s.errCount = m.errors.length;
+    if (m.errors.length) s.lastErr = m.errors[m.errors.length - 1].note || "";
+    valid.forEach(function (r) { if (s.lastT === null || r.t > s.lastT) s.lastT = r.t; });
+    s.pct = (s.ctx !== null && s.window) ? (s.ctx / s.window) : null;
+    return m;
+  }
+
+  /* Keep the sawtooth intact when there are more points than pixels: bucket by
+     pixel column and keep first/min/max/last in x-order. Plain every-nth
+     sampling silently eats the peaks — which are the whole story here. */
+  function downsample(points, maxPts) {
+    if (!points.length || points.length <= maxPts || maxPts < 4) return points;
+    var buckets = Math.max(2, Math.floor(maxPts / 4));
+    var x0 = points[0].x, x1 = points[points.length - 1].x;
+    var span = (x1 - x0) || 1;
+    var out = [], cur = [], b = 0;
+    function flush(arr) {
+      if (!arr.length) return;
+      var mn = arr[0], mx = arr[0];
+      arr.forEach(function (p) { if (p.y < mn.y) mn = p; if (p.y > mx.y) mx = p; });
+      var picked = [arr[0], mn, mx, arr[arr.length - 1]];
+      var seen = {};
+      picked.sort(function (p, q) { return p.x - q.x || p.i - q.i; }).forEach(function (p) {
+        if (!seen[p.i]) { seen[p.i] = 1; out.push(p); }
+      });
+    }
+    for (var i = 0; i < points.length; i++) {
+      var nb = Math.min(buckets - 1, Math.floor(((points[i].x - x0) / span) * buckets));
+      if (nb !== b) { flush(cur); cur = []; b = nb; }
+      cur.push(points[i]);
+    }
+    flush(cur);
+    return out;
+  }
+
+  function niceTicks(min, max, count) {
+    if (!isFinite(min) || !isFinite(max)) return [0];
+    if (max === min) { max = min + 1; }
+    var span = max - min;
+    var raw = span / Math.max(1, count);
+    var mag = Math.pow(10, Math.floor(Math.log(raw) / Math.LN10));
+    var norm = raw / mag;
+    var step = (norm >= 5 ? 10 : norm >= 2 ? 5 : norm >= 1 ? 2 : 1) * mag;
+    var t = [], start = Math.ceil(min / step) * step;
+    for (var v = start; v <= max + step * 0.001 && t.length < 40; v += step) t.push(Math.round(v * 1e6) / 1e6);
+    if (!t.length) t = [min, max];
+    return t;
+  }
+
+  function fmtInt(v) {
+    if (v === null || v === undefined || !isFinite(v)) return "—";
+    var neg = v < 0, a = Math.abs(Math.round(v)).toString();
+    return (neg ? "-" : "") + a.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  }
+  function fmtSigned(v) {
+    if (v === null || v === undefined || !isFinite(v)) return "—";
+    return (v > 0 ? "+" : "") + fmtInt(v);
+  }
+  function fmtCompact(v) {
+    if (v === null || v === undefined || !isFinite(v)) return "—";
+    var a = Math.abs(v), sgn = v < 0 ? "-" : "";
+    if (a >= 1e9) return sgn + (a / 1e9).toFixed(1).replace(/\.0$/, "") + "B";
+    if (a >= 1e6) return sgn + (a / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
+    if (a >= 1e4) return sgn + (a / 1e3).toFixed(1).replace(/\.0$/, "") + "K";
+    return fmtInt(v);
+  }
+  function fmtBytes(v) {
+    if (v === null || v === undefined || !isFinite(v)) return "—";
+    var a = Math.abs(v), sgn = v < 0 ? "-" : "";
+    if (a >= 1073741824) return sgn + (a / 1073741824).toFixed(2) + " GB";
+    if (a >= 1048576) return sgn + (a / 1048576).toFixed(2) + " MB";
+    if (a >= 1024) return sgn + (a / 1024).toFixed(1) + " KB";
+    return sgn + Math.round(a) + " B";
+  }
+  /* Axis-tick bytes. fmtBytes("747.3 KB") is 8 characters and gets clipped by
+     the left margin on a phone — the first render of this page showed a y-axis
+     reading "47.3 KB". Ticks get their own tighter format. */
+  function fmtBytesTick(v) {
+    if (v === null || v === undefined || !isFinite(v)) return "—";
+    var a = Math.abs(v), sgn = v < 0 ? "-" : "";
+    function n(x) { return x >= 100 ? String(Math.round(x)) : (Math.round(x * 10) / 10).toString(); }
+    if (a >= 1073741824) return sgn + n(a / 1073741824) + "GB";
+    if (a >= 1048576) return sgn + n(a / 1048576) + "MB";
+    if (a >= 1024) return sgn + n(a / 1024) + "KB";
+    return sgn + Math.round(a) + "B";
+  }
+  function fmtAge(ms) {
+    if (ms === null || ms === undefined || !isFinite(ms)) return "—";
+    if (ms < 0) ms = 0;
+    var s = Math.floor(ms / 1000);
+    if (s < 60) return s + "s ago";
+    var mn = Math.floor(s / 60);
+    if (mn < 60) return mn + "m " + (s % 60) + "s ago";
+    var hr = Math.floor(mn / 60);
+    if (hr < 48) return hr + "h " + (mn % 60) + "m ago";
+    return Math.floor(hr / 24) + "d ago";
+  }
+  function pad2(n) { return (n < 10 ? "0" : "") + n; }
+  function fmtClock(t, withDate) {
+    if (t === null || t === undefined || !isFinite(t)) return "—";
+    var d = new Date(t);
+    var hm = pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds());
+    return withDate ? (pad2(d.getMonth() + 1) + "/" + pad2(d.getDate()) + " " + hm) : hm;
+  }
+
+  return {
+    HEADER: HEADER,
+    parseCSV: parseCSV, parseMetrics: parseMetrics, shape: shape,
+    num: num, posNum: posNum, parseTs: parseTs,
+    downsample: downsample, niceTicks: niceTicks,
+    fmtInt: fmtInt, fmtSigned: fmtSigned, fmtCompact: fmtCompact,
+    fmtBytes: fmtBytes, fmtBytesTick: fmtBytesTick, fmtAge: fmtAge, fmtClock: fmtClock
+  };
+})();
+// FM-CORE-END
+
+(function () {
+  "use strict";
+  var NS = "http://www.w3.org/2000/svg";
+  var $ = function (id) { return document.getElementById(id); };
+
+  var svg = $("svg"), tip = $("tip"), plotwrap = $("plotwrap");
+  var lastText = null, model = null, parsed = null, lastGood = 0, bannerLock = "";
+  var pointer = null;   // {px, py} in svg pixel space
+
+  /* ---------- theme toggle (stamps data-theme; media query is the default) */
+  try {
+    var saved = localStorage.getItem("ferry-theme");
+    if (saved === "dark" || saved === "light") document.documentElement.setAttribute("data-theme", saved);
+  } catch (e) {}
+  $("themebtn").addEventListener("click", function () {
+    var cur = document.documentElement.getAttribute("data-theme");
+    var isDark = cur ? cur === "dark"
+      : (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    var next = isDark ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", next);
+    try { localStorage.setItem("ferry-theme", next); } catch (e) {}
+    draw();
+  });
+
+  /* ---------- tiny svg helper */
+  function mk(name, attrs, parent) {
+    var n = document.createElementNS(NS, name);
+    if (attrs) for (var k in attrs) if (attrs[k] !== null && attrs[k] !== undefined) n.setAttribute(k, attrs[k]);
+    if (parent) parent.appendChild(n);
+    return n;
+  }
+  function txt(parent, x, y, s, cls, anchor, size, weight, fill) {
+    var n = mk("text", {
+      x: x, y: y, "text-anchor": anchor || "start",
+      "font-size": size || 10, "font-weight": weight || 400,
+      fill: fill || "var(--text-muted)"
+    }, parent);
+    n.textContent = s;   // untrusted strings never touch innerHTML
+    return n;
+  }
+  function approxW(s, size) { return String(s).length * size * 0.56; }
+
+  function setBanner(kind, msg) {
+    var b = $("banner");
+    if (!msg) { b.className = "banner"; b.textContent = ""; return; }
+    b.className = "banner show " + (kind || "");
+    b.textContent = "";
+    var tag = document.createElement("span");
+    tag.className = "tag";
+    tag.textContent = kind === "err" ? "error · " : kind === "warn" ? "waiting · " : "note · ";
+    b.appendChild(tag);
+    b.appendChild(document.createTextNode(msg));
+  }
+  function setLive(kind, msg) {
+    $("livedot").className = "dot " + kind;
+    $("livetxt").textContent = msg;
+  }
+
+  /* ---------- fetch loop */
+  function poll() {
+    if (location.protocol === "file:") {
+      setBanner("err", "opened as a file:// page — the browser will not let it read metrics.csv. Serve it with tools/ferry-metrics-serve.py instead.");
+      setLive("err", "not served");
+      return;
+    }
+    fetch("metrics.csv?_=" + Date.now(), { cache: "no-store" })
+      .then(function (res) {
+        if (res.status === 404) { throw new Error("__404__"); }
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return res.text();
+      })
+      .then(function (text) {
+        plotwrap.classList.remove("stale");
+        lastGood = Date.now();
+        if (text === lastText) { refreshAge(); return; }
+        lastText = text;
+        render(text);
+      })
+      .catch(function (err) {
+        plotwrap.classList.add("stale");
+        if (err && err.message === "__404__") {
+          setLive("stale", "no metrics.csv");
+          setBanner("warn", "metrics.csv does not exist yet in this FERRY_DATA dir. The page will pick it up the moment the proxy writes its first row.");
+        } else {
+          setLive("err", "fetch failed");
+          setBanner("err", "cannot read metrics.csv — " + (err && err.message ? err.message : "unknown error") + ". Retrying every 2s.");
+        }
+      });
+  }
+
+  function render(text) {
+    try {
+      parsed = FM.parseMetrics(text);
+      if (parsed.state === "empty") {
+        model = null; clearPlot("metrics.csv is empty — waiting for the first event.");
+        setLive("stale", "empty file");
+        setBanner("warn", "metrics.csv is empty (0 rows, not even a header). Nothing to draw yet.");
+        fillTiles(null); fillTable(null);
+        return;
+      }
+      if (parsed.state === "noheader") {
+        model = null; clearPlot("metrics.csv has no recognisable header row.");
+        setLive("err", "bad header");
+        setBanner("err", "the first line of metrics.csv is not the Ferry header (expected: " + FM.HEADER.join(",") + ").");
+        fillTiles(null); fillTable(null);
+        return;
+      }
+      if (parsed.state === "headeronly") {
+        model = null; clearPlot("header written, no events logged yet.");
+        setLive("stale", "no events");
+        setBanner("warn", "metrics.csv has its header but no event rows yet." + (parsed.torn ? " (a partial final line was ignored)" : ""));
+        fillTiles(null); fillTable(parsed);
+        return;
+      }
+
+      model = FM.shape(parsed);
+      var notes = [];
+      if (parsed.torn) notes.push("last line was partial (write in flight) — ignored this pass");
+      if (parsed.skipped) notes.push(parsed.skipped + " malformed row" + (parsed.skipped > 1 ? "s" : "") + " skipped");
+      if (parsed.missingCols.length) notes.push("missing column" + (parsed.missingCols.length > 1 ? "s" : "") + ": " + parsed.missingCols.join(", "));
+      if (parsed.badTs) notes.push(parsed.badTs + " row(s) with an unreadable ts_iso");
+      if (model.stats.errCount) notes.push(model.stats.errCount + " error event(s) logged — latest: " + (model.stats.lastErr || "(no note)"));
+
+      if (notes.length) setBanner(model.stats.errCount ? "err" : "", notes.join(" · "));
+      else setBanner("", "");
+
+      setLive("live", model.rows.length + " events");
+      $("sub").textContent = "moved, not lost" + (model.mode ? " · " + model.mode + " mode" : "") + (model.stats.model ? " · " + model.stats.model : "");
+
+      fillTiles(model);
+      fillTable(parsed);
+      draw();
+    } catch (err) {
+      // Never a blank page. Keep whatever frame is on screen and say what broke.
+      setLive("err", "render failed");
+      setBanner("err", "could not render this metrics.csv — " + (err && err.message ? err.message : err) + ". Previous frame kept.");
+    }
+  }
+
+  /* ---------- header strip */
+  function fillTiles(m) {
+    if (!m) {
+      ["t-ctx","t-pct","t-cyc","t-evict","t-arch","t-age"].forEach(function (id) { $(id).textContent = "—"; });
+      ["t-win","t-cycfoot","t-evictfoot","t-archfoot","t-agefoot"].forEach(function (id) { $(id).textContent = ""; });
+      $("t-state").textContent = "";
+      $("t-meter").className = "meter";
+      $("t-meter").firstChild.style.width = "0%";
+      return;
+    }
+    var s = m.stats;
+    $("t-ctx").textContent = FM.fmtInt(s.ctx);
+    $("t-ctx").title = s.ctx === null ? "no context_tokens logged yet" : s.ctx + " tokens";
+
+    // The meter's severity is measured against the TRIGGER when we know it —
+    // that is the number that actually decides whether curation fires.
+    var ref = m.trigger || s.window || null;
+    var refName = m.trigger ? "trigger" : (s.window ? "window" : null);
+    var frac = (s.ctx !== null && ref) ? s.ctx / ref : null;
+    var meter = $("t-meter"), st = $("t-state");
+    meter.className = "meter" + (frac === null ? "" : frac >= 0.95 ? " crit" : frac >= 0.75 ? " warn" : "");
+    meter.firstChild.style.width = (frac === null ? 0 : Math.max(0, Math.min(1, frac)) * 100) + "%";
+    st.textContent = "";
+    if (frac === null) {
+      st.appendChild(document.createTextNode("no trigger or window recorded"));
+    } else {
+      var g = document.createElement("span");
+      g.className = "glyph";
+      g.textContent = frac >= 0.95 ? "▲" : frac >= 0.75 ? "◆" : "●";   // icon + label: colour never carries it alone
+      st.appendChild(g);
+      st.appendChild(document.createTextNode(
+        (frac >= 0.95 ? "at/over " : frac >= 0.75 ? "nearing " : "well under ") +
+        refName + " " + FM.fmtInt(ref) + " · " + Math.round(frac * 100) + "%"));
+    }
+
+    $("t-pct").textContent = s.pct === null ? "—" : (s.pct * 100).toFixed(1) + "%";
+    $("t-win").textContent = s.window ? "of " + FM.fmtInt(s.window) + "-token window" : "window not logged";
+
+    $("t-cyc").textContent = FM.fmtInt(s.cycles);
+    $("t-cycfoot").textContent = m.curations.length
+      ? "last: " + (m.xmode === "time" ? FM.fmtClock(m.curations[m.curations.length - 1].t) : "event #" + m.curations[m.curations.length - 1].i)
+      : "no curation yet";
+
+    $("t-evict").textContent = s.evicted === null ? "—" : FM.fmtInt(s.evicted);
+    $("t-evictfoot").textContent = s.evicted === null
+      ? (m.curations.length ? "curations logged, no counts" : "tokens moved to disk")
+      : "tokens moved to disk";
+
+    $("t-arch").textContent = FM.fmtBytes(s.abytes);
+    $("t-archfoot").textContent = s.alines === null ? "archive_lines not logged" : FM.fmtInt(s.alines) + " archived lines";
+
+    refreshAge();
+    $("t-agefoot").textContent = s.lastT === null ? "no readable timestamp" : FM.fmtClock(s.lastT, true);
+  }
+
+  function refreshAge() {
+    if (!model || model.stats.lastT === null) { $("t-age").textContent = "—"; return; }
+    var age = Date.now() - model.stats.lastT;
+    $("t-age").textContent = FM.fmtAge(age);
+    if (age > 120000) setLive("stale", "quiet " + FM.fmtAge(age));
+    else if (Date.now() - lastGood < 6000) setLive("live", model.rows.length + " events");
+  }
+
+  /* ---------- table view */
+  function fillTable(p) {
+    var tb = $("tbody");
+    tb.textContent = "";
+    if (!p || !p.rows.length) {
+      $("tablefoot").textContent = "no rows yet";
+      $("tablesummary").textContent = "Table view — every logged event";
+      return;
+    }
+    var rows = p.rows.slice(-400);
+    var frag = document.createDocumentFragment();
+    rows.forEach(function (r) {
+      var tr = document.createElement("tr");
+      function cell(v, cls) {
+        var td = document.createElement("td");
+        if (cls) td.className = cls;
+        td.textContent = v;            // untrusted note text: textContent only
+        tr.appendChild(td);
+      }
+      cell(r.t === null ? (r.ts || "—") : FM.fmtClock(r.t, true), "l");
+      cell(r.event, "l");
+      cell(r.cycle === null ? "" : FM.fmtInt(r.cycle));
+      cell(r.ctx === null ? "" : FM.fmtInt(r.ctx));
+      cell(r.tin === null ? "" : FM.fmtSigned(r.tin));
+      cell(r.evicted === null ? "" : FM.fmtInt(r.evicted));
+      cell(r.alines === null ? "" : FM.fmtInt(r.alines));
+      cell(r.abytes === null ? "" : FM.fmtInt(r.abytes));
+      cell(r.carry === null ? "" : FM.fmtInt(r.carry));
+      cell(r.note || "", "note l");
+      frag.appendChild(tr);
+    });
+    tb.appendChild(frag);
+    $("tablefoot").textContent = (p.rows.length > rows.length ? "showing the last " + rows.length + " of " + p.rows.length + " rows · " : p.rows.length + " rows · ") +
+      "blank cells are unmeasured, never zero";
+    $("tablesummary").textContent = "Table view — " + p.rows.length + " logged event" + (p.rows.length === 1 ? "" : "s");
+  }
+
+  /* ---------- drawing */
+  function clearPlot(msg) {
+    var W = Math.max(280, plotwrap.clientWidth || 320);
+    svg.setAttribute("viewBox", "0 0 " + W + " 160");
+    svg.setAttribute("height", 160);
+    svg.textContent = "";
+    txt(svg, W / 2, 82, msg, null, "middle", 12, 400, "var(--text-secondary)");
+    hideTip();
+  }
+
+  // `short` is not decoration: on a 360px phone the full subtitle runs past the
+  // right edge of the plot. The title is picked by MEASURED width, not by a
+  // breakpoint, so it also does the right thing at odd widths.
+  var PANELS = [
+    { key: "ctx",   short: "CONTEXT FILL",    title: "CONTEXT FILL — real input tokens per request", h: 190 },
+    { key: "in",    short: "TOKENS IN",       title: "TOKENS IN — delta per request", h: 92 },
+    { key: "evict", short: "TOKENS EVICTED",  title: "TOKENS EVICTED — per curation cycle", h: 92 },
+    { key: "arch",  short: "ARCHIVE GROWTH",  title: "ARCHIVE GROWTH — bytes on disk (where the tokens went)", h: 108 }
+  ];
+
+  var geom = null;   // shared across panels so every chart lines up in x
+
+  function draw() {
+    if (!model || !model.rows.length) return;
+    var W = Math.max(280, plotwrap.clientWidth || 320);
+    var narrow = W < 460;
+    var PR = narrow ? 8 : 14, PT = 6, AXIS = 26, GAP = narrow ? 26 : 28;
+    var fs = narrow ? 9 : 10;
+
+    // The left margin is MEASURED, not guessed: "747.3KB" needs more room than
+    // "100K", and a fixed margin clips the widest label on the narrowest phone.
+    var widest = 0;
+    function want(s) { widest = Math.max(widest, approxW(s, fs)); }
+    var ctxMax = 0, inLo = 0, inHi = 0, evMax = 0, arMax = 0;
+    model.requests.forEach(function (r) {
+      if (r.ctx !== null && r.ctx > ctxMax) ctxMax = r.ctx;
+      if (r.tin !== null) { if (r.tin > inHi) inHi = r.tin; if (r.tin < inLo) inLo = r.tin; }
+    });
+    model.curations.forEach(function (r) { if (r.evicted !== null && r.evicted > evMax) evMax = r.evicted; });
+    model.archives.forEach(function (r) { if (r.abytes !== null && r.abytes > arMax) arMax = r.abytes; });
+    if (model.trigger) ctxMax = Math.max(ctxMax, model.trigger);
+    FM.niceTicks(0, (ctxMax || 1) * 1.12, narrow ? 2 : 3).forEach(function (t) { want(FM.fmtCompact(t)); });
+    [inLo, inHi, evMax].forEach(function (v) { want(FM.fmtCompact(v)); });
+    want(FM.fmtBytesTick(arMax));
+    var PL = Math.max(30, Math.min(Math.round(W * 0.28), Math.ceil(widest) + 10));
+
+    var plotW = Math.max(40, W - PL - PR);
+
+    var heights = PANELS.map(function (p) { return p.key === "ctx" ? (narrow ? 158 : p.h) : (narrow ? Math.round(p.h * 0.86) : p.h); });
+    var H = PT + heights.reduce(function (a, b) { return a + b; }, 0) + GAP * PANELS.length + AXIS;
+
+    svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+    svg.setAttribute("height", H);
+    svg.textContent = "";
+
+    // ---- shared x domain: every event that has a place on the timeline
+    var xs = model.rows.map(function (r) { return r.x; });
+    var x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs);
+    if (!(isFinite(x0) && isFinite(x1))) { clearPlot("no plottable events yet."); return; }
+    if (x1 === x0) { x0 -= 1; x1 += 1; }
+    var padX = (x1 - x0) * 0.02;
+    x0 -= padX; x1 += padX;
+    var X = function (v) { return PL + ((v - x0) / (x1 - x0)) * plotW; };
+
+    // median spacing between requests -> bar width (irregular time axis)
+    var reqXs = model.requests.map(function (r) { return X(r.x); }).sort(function (a, b) { return a - b; });
+    var gaps = [];
+    for (var i = 1; i < reqXs.length; i++) gaps.push(reqXs[i] - reqXs[i - 1]);
+    gaps.sort(function (a, b) { return a - b; });
+    var med = gaps.length ? gaps[Math.floor(gaps.length / 2)] : plotW / 6;
+    var barW = Math.max(1.5, Math.min(24, med - 2));            // 2px surface gap between neighbours
+    var curW = Math.max(3, Math.min(24, (plotW / Math.max(3, model.curations.length * 2.2))));
+
+    geom = { W: W, PL: PL, PR: PR, plotW: plotW, X: X, x0: x0, x1: x1, fs: fs, narrow: narrow, panels: {} };
+
+    var y = PT;
+    PANELS.forEach(function (p, pi) {
+      y += GAP;
+      var top = y, h = heights[pi];
+      geom.panels[p.key] = { top: top, h: h };
+      var tsize = narrow ? 9 : 10;
+      var ttl = approxW(p.title, tsize) <= plotW ? p.title : p.short;
+      txt(svg, PL, top - 9, ttl, null, "start", tsize, 600, "var(--text-secondary)");
+      var g = mk("g", null, svg);
+      if (p.key === "ctx") panelCtx(g, top, h);
+      else if (p.key === "in") panelIn(g, top, h, barW);
+      else if (p.key === "evict") panelEvict(g, top, h, curW);
+      else panelArch(g, top, h);
+      y += h;
+    });
+
+    // ---- shared x axis, drawn once at the bottom of the stack
+    var axisY = y + 1;
+    mk("line", { x1: PL, x2: PL + plotW, y1: axisY, y2: axisY, stroke: "var(--axis)", "stroke-width": 1 }, svg);
+    var nTicks = Math.max(2, Math.min(6, Math.floor(plotW / (narrow ? 74 : 104))));
+    var withDate = false;
+    if (model.xmode === "time") {
+      var d0 = new Date(x0), d1 = new Date(x1);
+      withDate = d0.toDateString() !== d1.toDateString();
+    }
+    for (var k = 0; k <= nTicks; k++) {
+      var v = x0 + ((x1 - x0) * k) / nTicks;
+      var px = X(v);
+      var label = model.xmode === "time" ? FM.fmtClock(v, withDate) : "#" + Math.round(v);
+      var anchor = k === 0 ? "start" : k === nTicks ? "end" : "middle";
+      var lx = k === 0 ? PL : k === nTicks ? PL + plotW : px;
+      mk("line", { x1: px, x2: px, y1: axisY, y2: axisY + 3, stroke: "var(--axis)", "stroke-width": 1 }, svg);
+      txt(svg, lx, axisY + 14, label, null, anchor, fs, 400, "var(--text-muted)");
+    }
+    // Be precise about WHY we fell back. A burst of events inside one second
+    // (the collector stamps whole seconds) is not the same failure as a
+    // corrupt ts_iso, and telling the reader the wrong one sends them hunting.
+    if (model.xmode !== "time") {
+      var why = parsed && parsed.badTs ? "timestamps unreadable" : "all events share one timestamp";
+      txt(svg, PL + plotW, axisY + 24, "event ordinal — " + why, null, "end", fs, 400, "var(--text-muted)");
+    }
+
+    // ---- hover/crosshair layer over the whole stack
+    var overlay = mk("rect", {
+      x: PL, y: PT, width: plotW, height: (y - PT), fill: "transparent",
+      style: "cursor:crosshair"
+    }, svg);
+    geom.overlayTop = PT; geom.overlayBottom = y;
+    overlay.addEventListener("pointermove", onPointer);
+    overlay.addEventListener("pointerdown", onPointer);
+    overlay.addEventListener("pointerleave", hideTip);
+    geom.crosshair = mk("g", { style: "display:none" }, svg);
+
+    if (pointer) onPointerAt(pointer.px, pointer.py);
+  }
+
+  function yScale(top, h, lo, hi) {
+    if (hi === lo) hi = lo + 1;
+    return function (v) { return top + h - ((v - lo) / (hi - lo)) * h; };
+  }
+  function gridline(g, x1, x2, yy) {
+    mk("line", { x1: x1, x2: x2, y1: yy, y2: yy, stroke: "var(--grid)", "stroke-width": 1 }, g);
+  }
+
+  function panelCtx(g, top, h) {
+    var PL = geom.PL, plotW = geom.plotW, X = geom.X, fs = geom.fs;
+    var pts = model.requests.filter(function (r) { return r.ctx !== null; })
+      .map(function (r) { return { x: r.x, y: r.ctx, i: r.i, row: r }; });
+
+    var maxY = 0;
+    pts.forEach(function (p) { if (p.y > maxY) maxY = p.y; });
+    if (model.trigger && model.trigger > maxY * 0.4) maxY = Math.max(maxY, model.trigger);
+    if (!maxY) maxY = 1;
+    var hi = maxY * 1.12;
+    var Y = yScale(top, h, 0, hi);
+
+    FM.niceTicks(0, hi, geom.narrow ? 2 : 3).forEach(function (t) {
+      if (t > hi) return;
+      gridline(g, PL, PL + plotW, Y(t));
+      txt(g, PL - 6, Y(t) + 3, FM.fmtCompact(t), null, "end", fs, 400, "var(--text-muted)");
+    });
+    mk("line", { x1: PL, x2: PL + plotW, y1: Y(0), y2: Y(0), stroke: "var(--axis)", "stroke-width": 1 }, g);
+
+    // trigger / target guides, when proxy_start told us.
+    // Their labels go into `occupied` so the curation labels below route around
+    // them — on a 360px phone "cycle 3: -61,342 tok" lands exactly on "trigger".
+    var occupied = [];
+    [["trigger", model.trigger], ["target", model.target]].forEach(function (pair) {
+      var v = pair[1];
+      if (!v || v > hi) return;
+      mk("line", { x1: PL, x2: PL + plotW, y1: Y(v), y2: Y(v), stroke: "var(--axis)", "stroke-width": 1 }, g);
+      var s = pair[0] + " " + FM.fmtCompact(v);
+      txt(g, PL + plotW, Y(v) - 4, s, null, "end", fs, 600, "var(--text-muted)");
+      occupied.push({ a: PL + plotW - approxW(s, fs), b: PL + plotW, y: Y(v) - 4 });
+    });
+
+    if (!pts.length) {
+      txt(g, PL + plotW / 2, top + h / 2, "no request events with a token count yet", null, "middle", 11, 400, "var(--text-muted)");
+      return;
+    }
+
+    var draw = FM.downsample(pts, Math.max(24, Math.floor(plotW * 2)));
+    var d = "", a = "";
+    draw.forEach(function (p, i) {
+      var cx = X(p.x), cy = Y(p.y);
+      d += (i ? "L" : "M") + cx.toFixed(1) + " " + cy.toFixed(1);
+      a += (i ? "L" : "M" + cx.toFixed(1) + " " + Y(0).toFixed(1) + "L") + cx.toFixed(1) + " " + cy.toFixed(1);
+    });
+    a += "L" + X(draw[draw.length - 1].x).toFixed(1) + " " + Y(0).toFixed(1) + "Z";
+    mk("path", { d: a, fill: "var(--s-ctx)", "fill-opacity": 0.10, stroke: "none" }, g);
+    mk("path", { d: d, fill: "none", stroke: "var(--s-ctx)", "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }, g);
+
+    // ---- curation rules: the drop is the story, so each one is labelled
+    var placed = occupied.slice();
+    var cur = model.curations.slice().reverse();      // newest first — it always gets its label
+    cur.forEach(function (r) {
+      var cx = X(r.x);
+      mk("line", { x1: cx, x2: cx, y1: top, y2: top + h, stroke: "var(--s-evict)", "stroke-width": 2, "stroke-linecap": "round" }, g);
+      mk("circle", { cx: cx, cy: top, r: 3, fill: "var(--s-evict)", stroke: "var(--surface-1)", "stroke-width": 2 }, g);
+    });
+    cur.forEach(function (r, n) {
+      var cx = X(r.x);
+      var label = "cycle " + (r.cycle === null ? "?" : FM.fmtInt(r.cycle)) +
+        (r.evicted === null ? "" : ": -" + FM.fmtInt(r.evicted) + " tok");
+      var w = approxW(label, geom.fs);
+      var anchor = "start", lx = cx + 5;
+      if (lx + w > geom.PL + geom.plotW) { anchor = "end"; lx = cx - 5; }
+      var lane = 0, ly, LANES = 3;
+      // three lanes, then give up rather than paint a wall of text (label
+      // selectively). Rows overlap when they are within a line-height of each
+      // other, not only when they are on the same lane — the guide labels sit
+      // at whatever y the trigger value lands on.
+      for (; lane < LANES; lane++) {
+        ly = top + 12 + lane * 13;
+        var box = { a: anchor === "start" ? lx : lx - w, b: anchor === "start" ? lx + w : lx, y: ly };
+        var clash = placed.some(function (p) {
+          return Math.abs(p.y - box.y) < 11 && !(box.b < p.a - 5 || box.a > p.b + 5);
+        });
+        if (!clash) { placed.push(box); break; }
+      }
+      if (lane === LANES) return;           // its value still lives in the tooltip + table
+      txt(g, lx, ly, label, null, anchor, geom.fs, 600, "var(--text-secondary)");
+    });
+
+    // endpoint marker + direct label (the only per-point label on this panel)
+    var last = pts[pts.length - 1];
+    var ex = X(last.x), ey = Y(last.y);
+    mk("circle", { cx: ex, cy: ey, r: 4.5, fill: "var(--s-ctx)", stroke: "var(--surface-1)", "stroke-width": 2 }, g);
+    var lbl = FM.fmtInt(last.y), lw = approxW(lbl, geom.fs + 1);
+    var rightRoom = geom.PL + geom.plotW - ex > lw + 10;
+    txt(g, rightRoom ? ex + 8 : ex - 8, ey - 7, lbl, null, rightRoom ? "start" : "end", geom.fs + 1, 600, "var(--text-primary)");
+  }
+
+  function panelIn(g, top, h, barW) {
+    var PL = geom.PL, plotW = geom.plotW, X = geom.X, fs = geom.fs;
+    var pts = model.requests.filter(function (r) { return r.tin !== null; });
+    var lo = 0, hi = 0;
+    pts.forEach(function (r) { if (r.tin > hi) hi = r.tin; if (r.tin < lo) lo = r.tin; });
+    if (hi === 0 && lo === 0) hi = 1;
+    var pad = (hi - lo) * 0.12;
+    var Y = yScale(top, h, lo - (lo < 0 ? pad : 0), hi + pad);
+
+    [lo < 0 ? lo : null, 0, hi].forEach(function (t) {
+      if (t === null) return;
+      gridline(g, PL, PL + plotW, Y(t));
+      txt(g, PL - 6, Y(t) + 3, FM.fmtCompact(t), null, "end", fs, 400, "var(--text-muted)");
+    });
+    mk("line", { x1: PL, x2: PL + plotW, y1: Y(0), y2: Y(0), stroke: "var(--axis)", "stroke-width": 1 }, g);
+
+    if (!pts.length) {
+      txt(g, PL + plotW / 2, top + h / 2, "no tokens_in deltas yet", null, "middle", 11, 400, "var(--text-muted)");
+      return;
+    }
+    var zero = Y(0);
+    var maxR = pts.reduce(function (a, b) { return b.tin > a.tin ? b : a; });
+    var minR = pts.reduce(function (a, b) { return b.tin < a.tin ? b : a; });
+    pts.forEach(function (r) {
+      var cx = X(r.x), yv = Y(r.tin);
+      var up = r.tin >= 0;
+      var ht = Math.max(1, Math.abs(yv - zero));
+      // 4px rounded data-end, square at the baseline: only round the far corners
+      var rr = Math.min(4, barW / 2, ht);
+      var x = cx - barW / 2, yTop = up ? zero - ht : zero;
+      var d = up
+        ? "M" + x + " " + (yTop + ht) + "V" + (yTop + rr) + "a" + rr + " " + rr + " 0 0 1 " + rr + " " + (-rr) + "h" + (barW - 2 * rr) + "a" + rr + " " + rr + " 0 0 1 " + rr + " " + rr + "V" + (yTop + ht) + "Z"
+        : "M" + x + " " + yTop + "V" + (yTop + ht - rr) + "a" + rr + " " + rr + " 0 0 0 " + rr + " " + rr + "h" + (barW - 2 * rr) + "a" + rr + " " + rr + " 0 0 0 " + rr + " " + (-rr) + "V" + yTop + "Z";
+      mk("path", { d: d, fill: up ? "var(--s-ctx)" : "var(--s-evict)" }, g);
+    });
+    // selective direct labels: the biggest climb and the biggest drop only
+    [[maxR, true], [minR, false]].forEach(function (pair) {
+      var r = pair[0];
+      if (r.tin === 0) return;
+      if (pair[1] === false && minR.tin >= 0) return;
+      var cx = X(r.x), yv = Y(r.tin);
+      var s = FM.fmtSigned(r.tin), w = approxW(s, fs);
+      var lx = Math.max(PL + w / 2, Math.min(PL + plotW - w / 2, cx));
+      txt(g, lx, pair[1] ? yv - 4 : yv + fs + 2, s, null, "middle", fs, 600, "var(--text-secondary)");
+    });
+  }
+
+  function panelEvict(g, top, h, barW) {
+    var PL = geom.PL, plotW = geom.plotW, X = geom.X, fs = geom.fs;
+    var pts = model.curations.filter(function (r) { return r.evicted !== null; });
+    var hi = 0;
+    pts.forEach(function (r) { if (r.evicted > hi) hi = r.evicted; });
+    if (!hi) hi = 1;
+    var Y = yScale(top, h, 0, hi * 1.18);
+    [0, hi].forEach(function (t) {
+      gridline(g, PL, PL + plotW, Y(t));
+      txt(g, PL - 6, Y(t) + 3, FM.fmtCompact(t), null, "end", fs, 400, "var(--text-muted)");
+    });
+    mk("line", { x1: PL, x2: PL + plotW, y1: Y(0), y2: Y(0), stroke: "var(--axis)", "stroke-width": 1 }, g);
+
+    if (!pts.length) {
+      txt(g, PL + plotW / 2, top + h / 2,
+        model.curations.length ? "curations logged without an evicted count" : "no curation cycle yet",
+        null, "middle", 11, 400, "var(--text-muted)");
+      return;
+    }
+    var zero = Y(0);
+    var lastX = -1e9;
+    pts.forEach(function (r) {
+      var cx = X(r.x), yv = Y(r.evicted), ht = Math.max(1, zero - yv);
+      var rr = Math.min(4, barW / 2, ht);
+      var x = cx - barW / 2;
+      var d = "M" + x + " " + zero + "V" + (yv + rr) + "a" + rr + " " + rr + " 0 0 1 " + rr + " " + (-rr) +
+        "h" + (barW - 2 * rr) + "a" + rr + " " + rr + " 0 0 1 " + rr + " " + rr + "V" + zero + "Z";
+      mk("path", { d: d, fill: "var(--s-evict)" }, g);
+      var s = FM.fmtCompact(r.evicted), w = approxW(s, fs);
+      // only label when it fits without colliding with the previous cap
+      if (cx - w / 2 > lastX + 4 && cx - w / 2 > PL && cx + w / 2 < PL + plotW) {
+        txt(g, cx, yv - 4, s, null, "middle", fs, 600, "var(--text-secondary)");
+        lastX = cx + w / 2;
+      }
+    });
+  }
+
+  function panelArch(g, top, h) {
+    var PL = geom.PL, plotW = geom.plotW, X = geom.X, fs = geom.fs;
+    var pts = model.archives.filter(function (r) { return r.abytes !== null; })
+      .map(function (r) { return { x: r.x, y: r.abytes, i: r.i, row: r }; });
+    var hi = 0;
+    pts.forEach(function (p) { if (p.y > hi) hi = p.y; });
+    if (!hi) hi = 1;
+    var Y = yScale(top, h, 0, hi * 1.15);
+    [0, hi].forEach(function (t) {
+      gridline(g, PL, PL + plotW, Y(t));
+      txt(g, PL - 6, Y(t) + 3, FM.fmtBytesTick(t), null, "end", fs, 400, "var(--text-muted)");
+    });
+    mk("line", { x1: PL, x2: PL + plotW, y1: Y(0), y2: Y(0), stroke: "var(--axis)", "stroke-width": 1 }, g);
+
+    if (!pts.length) {
+      txt(g, PL + plotW / 2, top + h / 2, "nothing archived yet", null, "middle", 11, 400, "var(--text-muted)");
+      return;
+    }
+    var draw = FM.downsample(pts, Math.max(24, Math.floor(plotW)));
+    // Start the run at zero on the left edge. Without this the area begins at
+    // the first archive_write and the panel reads as "no data before cycle 1"
+    // when what actually happened is "nothing was on disk yet".
+    if (draw[0].y > 0) draw = [{ x: geom.x0, y: 0, i: -1 }].concat(draw);
+    // step-after: bytes are flat until an archive_write lands, then jump
+    var d = "M" + X(draw[0].x).toFixed(1) + " " + Y(draw[0].y).toFixed(1);
+    for (var i = 1; i < draw.length; i++) {
+      d += "H" + X(draw[i].x).toFixed(1) + "V" + Y(draw[i].y).toFixed(1);
+    }
+    var endX = PL + plotW;
+    d += "H" + endX.toFixed(1);
+    var area = d + "V" + Y(0).toFixed(1) + "H" + X(draw[0].x).toFixed(1) + "Z";
+    mk("path", { d: area, fill: "var(--s-arch)", "fill-opacity": 0.10, stroke: "none" }, g);
+    mk("path", { d: d, fill: "none", stroke: "var(--s-arch)", "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }, g);
+
+    var last = draw[draw.length - 1];
+    var ex = X(last.x), ey = Y(last.y);
+    mk("circle", { cx: ex, cy: ey, r: 4.5, fill: "var(--s-arch)", stroke: "var(--surface-1)", "stroke-width": 2 }, g);
+    var lbl = FM.fmtBytes(last.y), lw = approxW(lbl, fs + 1);
+    var room = PL + plotW - ex > lw + 10;
+    txt(g, room ? ex + 8 : ex - 8, ey - 7, lbl, null, room ? "start" : "end", fs + 1, 600, "var(--text-primary)");
+  }
+
+  /* ---------- crosshair + tooltip: aim at a TIME, never at a 2px mark */
+  function onPointer(ev) {
+    var pt = svg.createSVGPoint ? svg.createSVGPoint() : null;
+    var px, py;
+    if (pt && svg.getScreenCTM) {
+      pt.x = ev.clientX; pt.y = ev.clientY;
+      var m = svg.getScreenCTM();
+      var loc = m ? pt.matrixTransform(m.inverse()) : null;
+      px = loc ? loc.x : ev.offsetX;
+      py = loc ? loc.y : ev.offsetY;
+    } else {
+      px = ev.offsetX; py = ev.offsetY;
+    }
+    pointer = { px: px, py: py };
+    onPointerAt(px, py);
+  }
+
+  function onPointerAt(px, py) {
+    if (!model || !geom || !model.rows.length) return;
+    var best = null, bestD = Infinity;
+    model.rows.forEach(function (r) {
+      var d = Math.abs(geom.X(r.x) - px);
+      if (d < bestD) { bestD = d; best = r; }
+    });
+    if (!best) { hideTip(); return; }
+    var cx = geom.X(best.x);
+
+    var ch = geom.crosshair;
+    ch.textContent = "";
+    ch.setAttribute("style", "display:block");
+    mk("line", { x1: cx, x2: cx, y1: geom.overlayTop, y2: geom.overlayBottom, stroke: "var(--text-muted)", "stroke-width": 1, "stroke-opacity": 0.6 }, ch);
+
+    // context level at this x (last request at or before it)
+    var ctxRow = null;
+    for (var i = 0; i < model.requests.length; i++) {
+      if (model.requests[i].x <= best.x && model.requests[i].ctx !== null) ctxRow = model.requests[i];
+    }
+    if (!ctxRow && model.requests.length) ctxRow = model.requests[0];
+
+    tip.textContent = "";
+    var when = document.createElement("div");
+    when.className = "when";
+    when.textContent = model.xmode === "time" ? FM.fmtClock(best.t, true) : "event #" + best.i;
+    tip.appendChild(when);
+    var evd = document.createElement("div");
+    evd.className = "ev";
+    evd.textContent = best.event + (best.cycle !== null ? " · cycle " + FM.fmtInt(best.cycle) : "");
+    tip.appendChild(evd);
+
+    function row(color, value, name) {
+      var d = document.createElement("div"); d.className = "row";
+      var k = document.createElement("span"); k.className = "k"; k.style.background = color;
+      var v = document.createElement("span"); v.className = "v"; v.textContent = value;
+      var n = document.createElement("span"); n.className = "n"; n.textContent = name;
+      d.appendChild(k); d.appendChild(v); d.appendChild(n); tip.appendChild(d);
+    }
+    var ctxVal = best.ctx !== null ? best.ctx : (ctxRow ? ctxRow.ctx : null);
+    if (ctxVal !== null) row("var(--s-ctx)", FM.fmtInt(ctxVal), "context tok");
+    if (best.tin !== null) row("var(--s-ctx)", FM.fmtSigned(best.tin), "tokens in");
+    if (best.evicted !== null) row("var(--s-evict)", "-" + FM.fmtInt(best.evicted), "evicted");
+    if (best.abytes !== null) row("var(--s-arch)", FM.fmtBytes(best.abytes), "archive");
+    if (best.alines !== null) row("var(--s-arch)", FM.fmtInt(best.alines), "arch lines");
+    if (best.carry !== null) row("var(--text-muted)", FM.fmtInt(best.carry), "carry chars");
+    if (best.note) {
+      var nd = document.createElement("div"); nd.className = "note";
+      nd.textContent = best.note;
+      tip.appendChild(nd);
+    }
+    tip.classList.add("on");
+    tip.setAttribute("aria-hidden", "false");
+
+    // Place it in wrapper pixels, clamped inside the card so it can never push
+    // the page sideways. It rides just above the pointer, and flips to below
+    // when there is no room above (thumb near the top of a phone screen).
+    var scale = plotwrap.clientWidth / (geom.W || plotwrap.clientWidth || 1);
+    var tw = tip.offsetWidth || 150, th = tip.offsetHeight || 90;
+    var left = Math.max(tw / 2 + 2, Math.min(plotwrap.clientWidth - tw / 2 - 2, cx * scale));
+    var ptrY = (typeof py === "number" ? py : geom.overlayTop + 40) * scale;
+    var top = ptrY - 10;
+    if (top - th < 0) top = Math.min(ptrY + th + 14, plotwrap.clientHeight - 2);
+    tip.style.left = left + "px";
+    tip.style.top = top + "px";
+  }
+
+  function hideTip() {
+    pointer = null;
+    tip.classList.remove("on");
+    tip.setAttribute("aria-hidden", "true");
+    if (geom && geom.crosshair) geom.crosshair.setAttribute("style", "display:none");
+  }
+
+  /* ---------- boot */
+  var rt = null;
+  window.addEventListener("resize", function () {
+    clearTimeout(rt);
+    rt = setTimeout(function () { if (model) draw(); }, 120);
+  });
+  // location.origin is the string "null" in a sandboxed/srcdoc frame — printing
+  // it verbatim gives the reader a nonsense URL like "null/metrics.csv".
+  var src = "./metrics.csv";
+  try { src = new URL("metrics.csv", location.href).href; } catch (e) {}
+  if (/^null/.test(src)) src = "./metrics.csv";
+  $("srcfoot").textContent = "reading ./metrics.csv every 2s · " + src;
+  setLive("stale", "connecting…");
+  poll();
+  setInterval(poll, 2000);
+  setInterval(refreshAge, 1000);
+})();
+</script>
+</body>
+</html>

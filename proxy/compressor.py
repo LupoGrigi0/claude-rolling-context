@@ -548,7 +548,13 @@ class RollingCompressor:
             existing_payload = (self._extract_summary(messages)
                                 if has_existing_summary else "")
             new_summary = self._curation_producer.produce(
-                messages, start_idx, keep_from_idx, existing_payload)
+                messages, start_idx, keep_from_idx, existing_payload,
+                # The REAL upstream token count that tripped the trigger —
+                # the producer cannot know it (it only sees messages), and
+                # without it a curation row has no x on the token curve, so
+                # the cliff floats free of the climb that caused it. None
+                # when upstream never told us: blank, never a guess.
+                real_tokens=real_token_count or None)
             if not new_summary:
                 log.info("Nothing to curate")
                 return None

@@ -27,6 +27,12 @@ from urllib.parse import urlparse
 
 import endpoints
 import switch
+try:
+    # Instrumentation, never a dependency: the proxy must still start (and in
+    # default upstream mode behave byte-identically) if metrics.py is absent.
+    import metrics
+except Exception:                                   # pragma: no cover
+    metrics = None
 from compressor import RollingCompressor
 
 class FlushFileHandler(logging.FileHandler):
@@ -74,6 +80,21 @@ def _join_path(upstream_path: str, request_path: str) -> str:
     if not upstream_path.endswith("/") and not request_path.startswith("/"):
         return upstream_path + "/" + request_path
     return upstream_path + request_path
+
+
+# The one path that carries a conversation turn. do_POST dispatches on the
+# /v1/messages PREFIX (so sibling endpoints still get proxied correctly), but
+# metrics must be stricter: /v1/messages/count_tokens is a probe, not a turn,
+# and counting it would poison the context curve it shares a file with.
+TURN_PATH = "/v1/messages"
+
+
+def _is_turn_path(request_path: str) -> bool:
+    """True only for the exact /v1/messages endpoint (query string and a
+    trailing slash don't change what it is). Metrics-only: routing is
+    unchanged."""
+    path = urlparse(request_path or "").path.rstrip("/")
+    return path == TURN_PATH
 
 
 compressor = RollingCompressor(
@@ -401,6 +422,34 @@ if _persist_path:
     os.makedirs(_ferry_data, exist_ok=True)
 store = CompressionStore(persist_path=_persist_path)
 
+# Ferry metrics: None in default mode, and every call site is guarded — the
+# upstream path stays exactly as it was. In curation mode they follow the SAME
+# data dir as the archive and the state file (FERRY_DATA, else ~/ferry-data):
+# a supported config must not lose its instrumentation without saying so.
+_metrics = (metrics.get_writer(_ferry_data if _ferry_curation else None)
+            if metrics else None)
+
+
+def _metrics_off_reason():
+    """One sentence naming why there is no metrics file. Printed ONCE, in the
+    startup banner (see main): a missing measurement that announces itself is
+    a gap, while a missing measurement that stays quiet is a lie the graph
+    tells later."""
+    if metrics is None:
+        return "proxy/metrics.py is not installed"
+    return metrics.disabled_reason() or "unknown"
+
+
+# The model's real context window is nowhere in the request or the response;
+# set FERRY_WINDOW to record it (blank otherwise — a guessed window would
+# turn every "% of context used" chart into fiction).
+_window = os.environ.get("FERRY_WINDOW") or None
+if _metrics and store.compressions:
+    # Restored state, not a cold boot: the pointer index survived, so the
+    # token curve continues rather than starting over.
+    _metrics.row("restart", note=f"restored {len(store.compressions)} "
+                                 f"compression(s) from {_persist_path}")
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -498,6 +547,10 @@ def _do_background_compression(entry: dict, messages: list, auth_headers: dict,
             f"[BG] Compression failed (cooling down {FAILURE_COOLDOWN}s): {e}",
             exc_info=True,
         )
+        if _metrics:
+            _metrics.row("error", context_tokens=real_token_count or None,
+                         note=f"compression failed, cooling down "
+                              f"{FAILURE_COOLDOWN}s: {e}")
         entry["pending"] = None
 
 
@@ -877,10 +930,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         # Anthropic native: usage in message_start.message.usage
                         if evt_type == "message_start":
                             usage = data.get("message", {}).get("usage", {})
+                            # `or 0`, not a default: third-party Anthropic-format
+                            # upstreams (OpenRouter) send these keys as explicit
+                            # JSON null. `.get(k, 0)` returns None for a present
+                            # null, the int+None TypeError aborted this whole
+                            # loop, and the message_delta branch below — which
+                            # is where those upstreams put the REAL count —
+                            # was never reached. Every turn then fell back to
+                            # the chars/4 estimate.
                             tokens = (
-                                usage.get("input_tokens", 0)
-                                + usage.get("cache_creation_input_tokens", 0)
-                                + usage.get("cache_read_input_tokens", 0)
+                                (usage.get("input_tokens") or 0)
+                                + (usage.get("cache_creation_input_tokens") or 0)
+                                + (usage.get("cache_read_input_tokens") or 0)
                             )
                             if tokens > 0:
                                 total_input = tokens
@@ -889,7 +950,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         # Proxy/converter: usage in message_delta.usage (e.g. CodeGate)
                         elif evt_type == "message_delta":
                             usage = data.get("usage", {})
-                            tokens = int(usage.get("input_tokens", 0))
+                            tokens = int(usage.get("input_tokens") or 0)
                             if tokens > 0 and tokens > total_input:
                                 total_input = tokens
                                 log.info(f"[MSG] Input tokens from message_delta: {total_input:,}")
@@ -907,9 +968,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     data = json.loads(buffer)
                     usage = data.get("usage", {})
                     total_input = (
-                        usage.get("input_tokens", 0)
-                        + usage.get("cache_creation_input_tokens", 0)
-                        + usage.get("cache_read_input_tokens", 0)
+                        (usage.get("input_tokens") or 0)
+                        + (usage.get("cache_creation_input_tokens") or 0)
+                        + (usage.get("cache_read_input_tokens") or 0)
                     )
                     if total_input > 0:
                         log.info(f"[MSG] Input tokens from response: {total_input:,}")
@@ -919,12 +980,47 @@ class ProxyHandler(BaseHTTPRequestHandler):
             conn.close()
 
             # Fallback: estimate tokens from chars if SSE didn't provide usage
+            estimated = False
             if total_input == 0 and msg_chars > 0:
                 total_input = msg_chars // 4  # rough chars-to-tokens estimate
+                estimated = True
                 log.info(
                     f"[MSG] No tokens from SSE, estimating from chars: "
                     f"{msg_chars:,} chars -> ~{total_input:,} tokens"
                 )
+
+            # Ferry metrics: the REAL input tokens, as reported upstream. Note
+            # says how we know them — an estimated row and a measured row must
+            # never be read as the same kind of fact.
+            #
+            # ONLY the exact /v1/messages path is a conversation turn. Claude
+            # Code also POSTs /v1/messages/count_tokens, which lands here too
+            # (do_POST routes on the /v1/messages PREFIX): counting it as a
+            # request would put a chars/4 pseudo-context into the curve and
+            # inject two equal-and-opposite fake spikes into tokens_in as the
+            # delta bounced to the probe's number and back. And the delta is
+            # kept per session id, so a subagent (or a second conversation)
+            # sharing this proxy can never corrupt another session's chain.
+            if _metrics:
+                marks = []
+                if estimated:
+                    marks.append("estimate:chars/4")
+                if injected:
+                    marks.append("injected")
+                if disabled:
+                    marks.append("off")
+                if _is_turn_path(self.path):
+                    _metrics.row("request", session=session_id,
+                                 context_tokens=total_input or None,
+                                 model=model, window=_window,
+                                 note=", ".join(marks))
+                else:
+                    # Recorded (the traffic is real) but NOT as a turn: no
+                    # context_tokens, no delta, tagged with the path so the
+                    # row can never be mistaken for a conversation turn.
+                    _metrics.row("probe", model=model, window=_window,
+                                 note=f"non-turn POST "
+                                      f"{urlparse(self.path).path}")
 
             # Trigger compression based on token count. The minimum message
             # count keeps us from "compressing" sessions whose bulk is the
@@ -965,6 +1061,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         except Exception as e:
             log.error(f"[MSG] Upstream error: {e}", exc_info=True)
+            if _metrics:
+                # Never fail silently: a gap in the request rows must have a
+                # row explaining the gap.
+                _metrics.row("error", model=model, window=_window,
+                             note=f"upstream: {e}")
             error_body = json.dumps({"error": str(e)}).encode()
             self.send_response(502)
             self.send_header("content-type", "application/json")
@@ -1004,6 +1105,15 @@ def main():
     log.info(f"  Compacting via: {SUMMARIZER_BASE_URL}"
              f"{' (third-party — flattened fallback armed)' if NATIVE_FALLBACK else ''}")
     log.info(f"  Matching: content-based (no sessions/fingerprints)")
+    if _metrics:
+        log.info(f"  Ferry metrics: {_metrics.path}")
+        _metrics.row("proxy_start", window=_window,
+                     note=f"mode=ferry, trigger={TRIGGER_TOKENS}, "
+                          f"target={TARGET_TOKENS}, port={LISTEN_PORT}")
+    elif _ferry_curation:
+        # Ferry mode without a metrics file is a fact worth one loud line in
+        # the banner, next to everything else this proxy will and won't do.
+        log.warning(f"  Ferry metrics: OFF — {_metrics_off_reason()}")
 
     server = ThreadedHTTPServer(("127.0.0.1", LISTEN_PORT), ProxyHandler)
     try:
