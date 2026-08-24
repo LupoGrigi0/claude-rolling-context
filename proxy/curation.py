@@ -107,32 +107,123 @@ class FerryCurationProducer:
         return out
 
     # ── archive (verbatim, append-only) ────────────────────────────────
+    def _batch_digest(self, records):
+        """Content-addressed id for a batch of evicted turns.
+
+        Over role+content ONLY — deliberately NOT archived_ts, which differs
+        between an original write and its replay after a restart. Hashing the
+        timestamp would make every duplicate look unique, which is precisely
+        the bug this defends against.
+        """
+        h = hashlib.sha256()
+        for r in records:
+            h.update(json.dumps({"role": r["role"], "content": r["content"]},
+                                ensure_ascii=False, sort_keys=True).encode("utf-8"))
+            h.update(b"\x1e")
+        return h.hexdigest()
+
+    def _read_last_batch(self, ledger):
+        """Trailing entry of the batch ledger, or None."""
+        if not ledger.exists():
+            return None
+        last = None
+        try:
+            with open(ledger, encoding="utf-8") as f:
+                for line in f:
+                    if line.strip():
+                        last = line
+            return json.loads(last) if last else None
+        except (OSError, ValueError):
+            # An unreadable ledger must never block a crossing: we lose
+            # idempotence for this cycle, not the turns.
+            log.warning("[FERRY] batch ledger unreadable; archiving without "
+                        "duplicate check")
+            return None
+
     def _archive_turns(self, turns):
         """Append evicted turns verbatim (media externalized). Returns
         (filename, first_line, last_line, batch_chars) — lines 1-based,
         inclusive; batch_chars is what we actually wrote for this batch
         (the metrics collector's chars/4 token estimate, measured rather
         than re-derived: media is already externalized here, so a 4 MB
-        screenshot doesn't masquerade as a million evicted tokens)."""
+        screenshot doesn't masquerade as a million evicted tokens).
+
+        IDEMPOTENT (the Phase D defect, 2026-08-23). There is a window where
+        curation has already written turns to the archive but the pointer
+        index still sits unpersisted in entry["pending"]. A crash inside it
+        leaves the turns durable and the INDEX LOST — so on restart the same
+        turns are archived again (epoch 2 cycle 1 logged `index 15+6`,
+        identical to epoch 1 cycle 2; L16-L21 rewritten as L22-L27).
+
+        Nothing was ever lost and the reconstructability invariant held, but
+        §19.5 reclassified this: it is not "duplicate entries", it is
+        CURATION REPORTING SUCCESS WHILE THE INDEX THAT MAKES THE ARCHIVE
+        REACHABLE IS LOST. The bytes are safe and the mind cannot find them.
+        Same family as a channel returning 200 over a dead notification leg.
+
+        Fix: a batch is content-addressed and recorded in a sidecar ledger.
+        If the batch about to be written is byte-identical to the trailing
+        batch already on disk, we do NOT rewrite it — we return the range it
+        already occupies, so the replayed index points at the ORIGINAL lines.
+        The archive stops growing duplicates and the slug index heals itself.
+
+        Only the TRAILING batch is compared, on purpose: that is the only one
+        a restart can replay, and matching any-batch-anywhere would silently
+        dedupe genuinely repeated content, which would be a different lie.
+        """
         fname = f"archive_{time.strftime('%Y%m%d', time.gmtime())}.jsonl"
         path = self.archive_dir / fname
-        # first line number of this batch = existing line count + 1
+        ledger = self.archive_dir / f"{fname}.batches"
+
+        # Build records first: the digest must be computed over exactly what
+        # would be written, with media already externalized.
+        records = [{
+            "role": t.get("role", "unknown"),
+            "content": self._externalize_media(t.get("content", "")),
+        } for t in turns]
+        digest = self._batch_digest(records)
+
+        prior = self._read_last_batch(ledger)
+        if prior and prior.get("sha256") == digest:
+            log.info(
+                f"[FERRY] archive: batch {digest[:12]} already durable at "
+                f"{fname}#L{prior['first']}-L{prior['last']} — NOT rewriting. "
+                f"This is the restart replay healing itself; the index now "
+                f"points at the original lines.")
+            return (fname, int(prior["first"]), int(prior["last"]),
+                    int(prior.get("batch_chars", 0)))
+
         first = 1
         if path.exists():
             with open(path, encoding="utf-8") as f:
                 first = sum(1 for _ in f) + 1
+
         batch_chars = 0
         with open(path, "a", encoding="utf-8") as f:
-            for t in turns:
-                record = {
-                    "role": t.get("role", "unknown"),
-                    "content": self._externalize_media(t.get("content", "")),
-                    "archived_ts": _now(),
-                }
-                line = json.dumps(record, ensure_ascii=False) + "\n"
+            for r in records:
+                line = json.dumps({**r, "archived_ts": _now()},
+                                  ensure_ascii=False) + "\n"
                 batch_chars += len(line)
                 f.write(line)
-        return fname, first, first + len(turns) - 1, batch_chars
+            f.flush()
+            os.fsync(f.fileno())
+
+        last = first + len(records) - 1
+        # Ledger AFTER the archive is durable: a ledger entry for turns that
+        # are not on disk would make a later replay skip writing them, which
+        # would turn a duplicate into a HOLE. Duplicates are untidy; holes
+        # are unrecoverable. Order matters more than elegance here.
+        try:
+            with open(ledger, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"sha256": digest, "first": first,
+                                    "last": last, "batch_chars": batch_chars,
+                                    "ts": _now()}) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+        except OSError as e:
+            log.warning(f"[FERRY] batch ledger not written ({e}); a restart "
+                        f"inside the pending window may duplicate this batch")
+        return fname, first, last, batch_chars
 
     # ── slugs (deterministic scaffolding + verbatim gist) ──────────────
     @staticmethod

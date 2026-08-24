@@ -181,5 +181,74 @@ check("gist skips system-reminder boilerplate",
       FerryCurationProducer._gist(boiler).startswith(
           "Important context to remember: The harbor beacon code"))
 
+# ── idempotent archive writes: the Phase D restart-replay defect ────────
+# Reproduces the exact observed failure: curation wrote turns to the archive,
+# the pointer index was still unpersisted in entry["pending"], the proxy
+# restarted inside that window, and the SAME turns were archived again
+# (epoch 2 cycle 1 logged `index 15+6`, identical to epoch 1 cycle 2 —
+# L16-L21 rewritten as L22-L27).
+print("\nidempotent archive (restart replay):")
+_d = Path(tempfile.mkdtemp())
+prod = FerryCurationProducer(_d)
+BATCH = [{"role": "user", "content": "the vault phrase is LANTERN-SEVEN-RIVER"},
+         {"role": "assistant", "content": "noted, carrying it"}]
+
+fn1, f1, l1, c1 = prod._archive_turns(BATCH)
+check("first write lands at L1-L2", (f1, l1) == (1, 2), (f1, l1))
+
+# The restart replay: same proxy, same batch, index was lost.
+fn2, f2, l2, c2 = prod._archive_turns(BATCH)
+check("REPLAY of an identical trailing batch is NOT rewritten — the index "
+      "points back at the ORIGINAL lines", (fn2, f2, l2) == (fn1, 1, 2), (fn2, f2, l2))
+check("replay returns the original batch_chars, not 0 (a re-derived 0 would "
+      "under-report evicted tokens on the metrics row)", c2 == c1, (c1, c2))
+
+lines = (_d / "archive" / fn1).read_text(encoding="utf-8").splitlines()
+check("archive still has exactly 2 lines — no duplicate content accrued",
+      len(lines) == 2, len(lines))
+
+# A genuinely new batch still appends after the deduped one.
+NEXT = [{"role": "user", "content": "and now something entirely different"}]
+fn3, f3, l3, _ = prod._archive_turns(NEXT)
+check("a new batch appends after the deduped one", (f3, l3) == (3, 3), (f3, l3))
+
+# Only the TRAILING batch is compared. Re-sending BATCH now must NOT dedupe:
+# matching any-batch-anywhere would silently swallow genuinely repeated
+# content, which is a different lie than the one we are fixing.
+fn4, f4, l4, _ = prod._archive_turns(BATCH)
+check("an identical batch that is NOT the trailing one IS written (we dedupe "
+      "restart replays, never genuine repetition)", (f4, l4) == (4, 5), (f4, l4))
+
+# The digest must ignore archived_ts, or a replay never matches.
+recs = [{"role": b["role"], "content": b["content"]} for b in BATCH]
+# GOLDEN DIGEST. Pinned, not recomputed. An earlier version of this check
+# compared _batch_digest against itself, which passed even when the digest
+# included _now() — because both calls landed in the SAME SECOND. It would
+# have failed in production, where a restart replay happens minutes later,
+# and the mutation that introduced it survived the suite. A test that passes
+# by accident of timing is a test that cannot fail.
+check("batch digest is EXACTLY the pinned value — proves the hash covers "
+      "role+content and NOTHING else (no timestamp, no ordering salt)",
+      prod._batch_digest(recs) == "96478339a6a2f0d6791543067893ef03641481e6061982a1c6ffcb726bc16cbe", prod._batch_digest(recs))
+check("adding an archived_ts field to the input does not change the digest",
+      prod._batch_digest([dict(r, archived_ts="2020-01-01T00:00:00Z")
+                          for r in recs]) == "96478339a6a2f0d6791543067893ef03641481e6061982a1c6ffcb726bc16cbe")
+
+# Ledger ordering: archive first, ledger second. A ledger entry for turns not
+# on disk would make a later replay SKIP writing them — turning a duplicate
+# into a hole. Duplicates are untidy; holes are unrecoverable.
+ledger = _d / "archive" / f"{fn1}.batches"
+check("batch ledger exists beside the archive", ledger.exists())
+led = [json.loads(x) for x in ledger.read_text().splitlines() if x.strip()]
+check("ledger records one entry per WRITTEN batch (3), not per call (4)",
+      len(led) == 3, len(led))
+check("every ledger range points at lines that actually exist",
+      all(1 <= e["first"] <= e["last"] <= 5 for e in led), led)
+
+# Reconstructability still holds after all of that.
+archived = (_d / "archive" / fn1).read_text(encoding="utf-8")
+check("the beacon is still byte-present in the archive after dedupe",
+      "LANTERN-SEVEN-RIVER" in archived)
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)
