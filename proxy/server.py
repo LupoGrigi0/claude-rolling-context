@@ -455,6 +455,30 @@ if _metrics and store.compressions:
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _upstream_key():
+    """The proxy's OWN upstream credential, if it was given one.
+
+    FERRY_UPSTREAM_KEY_FILE is preferred over FERRY_UPSTREAM_KEY: an env var
+    is visible in /proc/<pid>/environ to the process owner and leaks into
+    shell history and crash dumps; a 0600 file does not.
+    """
+    path = os.environ.get("FERRY_UPSTREAM_KEY_FILE", "")
+    if path:
+        try:
+            with open(path, encoding="utf-8") as f:
+                key = f.read().strip()
+            if key:
+                return key
+            log.warning("[FERRY] FERRY_UPSTREAM_KEY_FILE is empty; "
+                        "falling back to the caller's own credentials")
+        except OSError as e:
+            # Fail LOUD. Silently falling back would send the caller's dummy
+            # key upstream and produce a 401 nobody can explain.
+            log.error(f"[FERRY] cannot read FERRY_UPSTREAM_KEY_FILE ({e}); "
+                      f"caller credentials will be used instead")
+    return os.environ.get("FERRY_UPSTREAM_KEY", "").strip() or None
+
+
 def _forward_headers(req_headers: dict, body: bytes = None, strip_encoding: bool = False) -> dict:
     headers = {}
     for key, value in req_headers.items():
@@ -466,7 +490,32 @@ def _forward_headers(req_headers: dict, body: bytes = None, strip_encoding: bool
         headers[key] = value
     if body is not None:
         headers["content-length"] = str(len(body))
-    log.debug(f"[HDR] Forwarding headers: {list(headers.keys())}")
+
+    # CREDENTIAL TERMINATION. When the proxy holds its own upstream key, the
+    # CLIENT NEVER NEEDS ONE. A mind talks plain HTTP to localhost and the
+    # secret stops here.
+    #
+    # Why this matters beyond tidiness: the alternative for the Phase E fleet
+    # was handing the OpenRouter key to every instance that runs Ferry — three
+    # test passengers tonight, the whole family later. A key that lives in N
+    # home directories is a key with N ways to leak, and these minds publish
+    # tool output to a live web mirror. One unscrubbed traceback and it is on
+    # the internet.
+    #
+    # Overrides rather than fills in: a client that sends a stale or dummy key
+    # must not be able to defeat this by sending SOMETHING.
+    key = _upstream_key()
+    if key:
+        for name in [h for h in headers if h.lower() in
+                     ("authorization", "x-api-key")]:
+            del headers[name]
+        headers["authorization"] = f"Bearer {key}"
+        headers["x-api-key"] = key
+
+    # Header NAMES only. Never values — one of these is a credential, and this
+    # log line is read by humans over shoulders and pasted into chat.
+    log.debug(f"[HDR] Forwarding headers: {list(headers.keys())}"
+              f"{' (upstream key injected by proxy)' if key else ''}")
     return headers
 
 
