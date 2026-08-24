@@ -202,10 +202,32 @@ class MetricsWriter:
             self._note_error(err)
 
     def _apply_delta(self, fields, session=None):
-        """tokens_in = growth since this SESSION's previous request. Blank on
-        its first request (and on the first after a restart — across a restart
-        the delta is genuinely unknown, and unknown is blank). A row whose
-        delta cannot be known keeps tokens_in blank; it is never 0."""
+        """tokens_in = growth since this STREAM's previous request. Blank when
+        the delta is genuinely unknown — first request, first after a restart,
+        or an interleaved stream (below). Unknown is blank; it is never 0.
+
+        THE PHANTOM SAWTOOTH (found by Lupo reading a live graph, 2026-08-23;
+        flagged HIGH by the round-2 adversarial pass and unfixed until now):
+        keying by session id is NOT enough. Claude Code gives a subagent its
+        PARENT'S session id, and fires its own small side-queries (session
+        title generation) on that same id. So a 20k parent turn and a 512-token
+        side-query land on one chain and the graph draws a cliff and a wall
+        that never happened — 20,000 down, 20,000 up, both fiction.
+
+        A graph that draws a drop nobody experienced is exactly the instrument
+        this project refuses to ship. So:
+
+        A DROP MUST BE EXPLAINED BY A CURATION. Context shrinks for exactly one
+        legitimate reason — a curation cycle evicted turns. If context fell and
+        the cycle counter has NOT advanced since this chain's previous request,
+        the two rows are not consecutive turns of one conversation. We do not
+        know this row's delta, so it stays BLANK.
+
+        And critically: an unexplained row DOES NOT UPDATE THE CHAIN. The
+        subagent's 512 must not become the parent's baseline, or the parent's
+        next real turn reports a 20k surge that also never happened. Poisoning
+        the chain is how one phantom becomes two.
+        """
         ctx = fields.get("context_tokens")
         if ctx in (None, ""):
             return
@@ -215,9 +237,23 @@ class MetricsWriter:
             return
         key = session or ""
         previous = self._session_context.get(key)
-        if fields.get("tokens_in") is None and previous is not None:
-            fields["tokens_in"] = ctx - previous
-        self._session_context[key] = ctx
+
+        if previous is not None:
+            prev_ctx, prev_cycle = previous
+            if ctx < prev_ctx and self._cycle == prev_cycle:
+                # Unexplained shrink: an interleaved stream on a shared
+                # session id. Blank, say so, and leave the chain alone.
+                log.info(
+                    f"[FERRY] metrics: unexplained context drop "
+                    f"{prev_ctx:,} -> {ctx:,} with no curation between "
+                    f"(session {key[:8] or '(none)'}); tokens_in left BLANK "
+                    f"and the delta chain preserved — this is an interleaved "
+                    f"stream (subagent or harness side-query), not a turn.")
+                return
+            if fields.get("tokens_in") is None:
+                fields["tokens_in"] = ctx - prev_ctx
+
+        self._session_context[key] = (ctx, self._cycle)
         self._session_context.move_to_end(key)
         while len(self._session_context) > _MAX_SESSIONS:
             self._session_context.popitem(last=False)

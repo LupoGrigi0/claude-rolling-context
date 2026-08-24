@@ -111,17 +111,57 @@ check("ts_iso is stamped on every row and ends in Z",
 print("\ntokens_in delta:")
 p3 = tmp / "delta" / "metrics.csv"
 wd = MetricsWriter(p3)
+# Ordered the way a curation cliff ACTUALLY happens: the cycle advances, THEN
+# the next request carries the smaller context. The previous version of this
+# fixture put the curation row BEFORE the growth and asserted a drop with no
+# curation between the two requests — a sequence that never occurs live. It
+# was invented, not observed, and it disagreed with the real Phase D data.
 wd.row("request", context_tokens=10000)
-wd.row("curation", cycle=1, tokens_evicted=500)   # must not disturb the delta
 wd.row("request", context_tokens=14200)
+wd.next_cycle()                                   # a curation cycle fires
+wd.row("curation", cycle=1, tokens_evicted=500)   # must not disturb the delta
 wd.row("request", context_tokens=9000)            # after a curation: negative
 d = [dict(zip(HEADER, row)) for row in read_rows(p3)[1:]]
 check("first request has BLANK tokens_in (no previous — not 0)",
       d[0]["tokens_in"] == "", d[0])
-check("second request records the growth", d[2]["tokens_in"] == "4200", d[2])
+check("second request records the growth", d[1]["tokens_in"] == "4200", d[1])
 check("a drop is recorded as a negative delta (the curation cliff)",
       d[3]["tokens_in"] == "-5200", d[3])
-check("non-request rows never carry a synthetic delta", d[1]["tokens_in"] == "")
+check("non-request rows never carry a synthetic delta", d[2]["tokens_in"] == "")
+
+# ── the phantom sawtooth (observed in the real Phase D run, 2026-08-23) ──
+# Claude Code hands a subagent its PARENT'S session id, and fires its own
+# small side-queries on that same id. The live graph drew a 20,000-token
+# cliff and an equal wall, neither of which happened. Lupo found it by
+# reading the graph and asking the obvious question.
+print("\nphantom sawtooth:")
+pph = tmp / "phantom" / "metrics.csv"
+wp = MetricsWriter(pph)
+S = "shared-session-id"
+wp.row("request", session=S, context_tokens=21020)   # parent turn
+wp.row("request", session=S, context_tokens=514)     # <- side-query, NOT a turn
+wp.row("request", session=S, context_tokens=21469)   # parent's next real turn
+ph = [dict(zip(HEADER, row)) for row in read_rows(pph)[1:]]
+check("an unexplained drop (no curation between) is BLANK, never a fake cliff",
+      ph[1]["tokens_in"] == "", ph[1])
+check("the interleaved row does NOT poison the chain: the parent's next turn "
+      "reports its REAL growth (449), not a fabricated +20955 wall",
+      ph[2]["tokens_in"] == "449", ph[2])
+check("no fabricated 20k spike appears anywhere in the file",
+      all(abs(int(r["tokens_in"])) < 20000
+          for r in ph if r["tokens_in"] not in ("", None)))
+
+# and the mirror case: an EXPLAINED drop of the same shape must survive
+pex = tmp / "explained" / "metrics.csv"
+we = MetricsWriter(pex)
+we.row("request", session=S, context_tokens=31270)
+we.next_cycle()
+we.row("curation", session=S, cycle=1, tokens_evicted=6000)
+we.row("request", session=S, context_tokens=24533)
+ex = [dict(zip(HEADER, row)) for row in read_rows(pex)[1:]]
+check("a drop EXPLAINED by a curation is still recorded (-6737), so the fix "
+      "suppresses phantoms without flattening the real sawtooth",
+      ex[2]["tokens_in"] == "-6737", ex[2])
 wd2 = MetricsWriter(p3)
 wd2.row("request", context_tokens=12345)
 check("first request after a restart is blank again (delta truly unknown)",
