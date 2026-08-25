@@ -926,6 +926,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             resp = conn.getresponse()
 
             log.info(f"[MSG] Upstream response: {resp.status} {resp.reason}")
+            _upstream_status = resp.status
 
             self.send_response(resp.status)
             resp_headers = resp.getheaders()
@@ -1058,7 +1059,23 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     marks.append("injected")
                 if disabled:
                     marks.append("off")
-                if _is_turn_path(self.path):
+                # A REJECTED REQUEST IS NOT A TURN. On 2026-08-25 three
+                # instances hit an OpenRouter free-tier wall five seconds
+                # after waking and spent FOURTEEN HOURS in exponential
+                # backoff. Every 429 was recorded as a request row with a
+                # chars/4 pseudo-context, so the graph showed ~800 healthy
+                # requests per instance and a comfortable flat line while
+                # nothing whatsoever was happening. 781 retries of one
+                # request read as 781 turns.
+                #
+                # Same failure as counting count_tokens probes as turns, and
+                # the same fix: record it, never as a conversation turn.
+                _status = locals().get("_upstream_status")
+                if _status is not None and _status != 200:
+                    _metrics.row("error", model=model, window=_window,
+                                 note=f"upstream {_status}; not a turn; "
+                                      + ", ".join(marks))
+                elif _is_turn_path(self.path):
                     _metrics.row("request", session=session_id,
                                  context_tokens=total_input or None,
                                  model=model, window=_window,
