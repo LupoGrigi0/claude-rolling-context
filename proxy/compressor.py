@@ -287,6 +287,22 @@ class RollingCompressor:
                 return fwd
             fwd += 1
 
+        # Still nothing INTACT. Try a REPAIRABLE boundary at the target, then
+        # walking back: a cut where the first kept message is a tool_result
+        # whose tool_use we can carry forward verbatim in the ack. This is
+        # what makes curation possible at all inside an autonomous tool run.
+        rep = cut
+        while rep > floor:
+            if self._orphaned_tool_uses(messages, rep):
+                log.info(
+                    f"No intact cut point anywhere; cutting at {rep} and "
+                    f"REPAIRING the boundary — carrying "
+                    f"{len(self._orphaned_tool_uses(messages, rep))} tool_use "
+                    f"block(s) forward verbatim so the kept tool_results stay "
+                    f"legal. This is the agentic-traffic path.")
+                return rep
+            rep -= 1
+
         # Genuinely nowhere legal to cut in either direction. Say so loudly:
         # the caller will pass through, and a silent pass-through is how this
         # went unnoticed in the first place.
@@ -296,6 +312,50 @@ class RollingCompressor:
             f"Curation cannot run on this conversation shape — context will "
             f"keep growing. This is a real gap, not a quiet no-op.")
         return floor
+
+    def _orphaned_tool_uses(self, messages: list, cut: int):
+        """tool_use blocks the FIRST KEPT message still needs, verbatim.
+
+        A tool_result may only follow the assistant turn that issued its
+        tool_use. Cut between them and the API rejects the whole request —
+        which is why _safe_cut hunts for a boundary where that never happens.
+
+        In agentic traffic that boundary does not exist. The "user" turns ARE
+        tool_results; the only plain user turns are the human's, and an
+        autonomous run has none. Observed live: 164 messages, ZERO legal cut
+        points, curation impossible.
+
+        So instead of hunting for an intact boundary, REPAIR the one we want:
+        carry the needed tool_use blocks forward into the injected ack. They
+        are copied byte-for-byte out of the evicted assistant turn — we hold
+        those bytes — so nothing here is fabricated and the reconstructability
+        invariant is untouched.
+
+        Returns [] when no repair is needed, None when repair is impossible
+        (a tool_result whose tool_use is not in the immediately preceding
+        message — a shape we should never emit, and must not paper over).
+        """
+        if cut <= 0 or cut >= len(messages):
+            return None
+        need = []
+        content = messages[cut].get("content")
+        if isinstance(content, list):
+            need = [b.get("tool_use_id") for b in content
+                    if isinstance(b, dict) and b.get("type") == "tool_result"]
+        need = [i for i in need if i]
+        if not need:
+            return []
+        prev = messages[cut - 1]
+        if prev.get("role") != "assistant":
+            return None
+        prev_content = prev.get("content")
+        if not isinstance(prev_content, list):
+            return None
+        have = {b.get("id"): b for b in prev_content
+                if isinstance(b, dict) and b.get("type") == "tool_use"}
+        if not all(i in have for i in need):
+            return None            # cannot repair honestly; refuse
+        return [have[i] for i in need]
 
     def _has_tool_use(self, message: dict) -> bool:
         content = message.get("content", "")
@@ -611,7 +671,21 @@ class RollingCompressor:
                 "content": (f"{SUMMARY_MARKER}\n{new_summary}\n"
                             f"{SUMMARY_END_MARKER}\n\n{CURATION_FRAMING_USER}"),
             }
-            ack_message = {"role": "assistant", "content": CURATION_FRAMING_ACK}
+            # Repair the boundary if the first kept message needs it. The
+            # ack becomes [text, tool_use...] so the tool_results that follow
+            # it remain legal. Blocks are verbatim from the evicted turn.
+            carried = self._orphaned_tool_uses(messages, keep_from_idx) or []
+            if carried:
+                ack_message = {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": CURATION_FRAMING_ACK}]
+                               + carried,
+                }
+                log.info(f"Boundary repaired: carried {len(carried)} tool_use "
+                         f"block(s) into the ack (verbatim).")
+            else:
+                ack_message = {"role": "assistant",
+                               "content": CURATION_FRAMING_ACK}
             compressed = [summary_message, ack_message] + recent_messages
             self.compression_count += 1
             log.info(

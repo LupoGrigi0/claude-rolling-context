@@ -77,10 +77,64 @@ check("forward means we keep LESS than asked — evicting MORE is the right way 
 
 print("\nsafety rails:")
 check("never keeps zero messages", C._safe_cut(tool_run, len(tool_run) - 1, 0) < len(tool_run))
-nowhere = [user("only"), asst_tool(), user_result()]
-check("genuinely no legal cut returns the floor (caller passes through) "
-      "rather than inventing an illegal one",
-      C._safe_cut(nowhere, 2, 0) == 0, C._safe_cut(nowhere, 2, 0))
+# This shape used to return the floor (= curate nothing). It no longer does,
+# and that change is the POINT: the tool_use for that tool_result is sitting
+# in the immediately preceding message, so the boundary is REPAIRABLE — we
+# carry the block forward verbatim into the ack. Curating here is now legal.
+repairable = [user("only"), asst_tool(), user_result()]
+check("a boundary whose tool_use is recoverable is now CUT, not refused "
+      "(this is what makes agentic traffic curatable at all)",
+      C._safe_cut(repairable, 2, 0) == 2, C._safe_cut(repairable, 2, 0))
+check("and the block it would carry is the real one, verbatim",
+      [b["id"] for b in (C._orphaned_tool_uses(repairable, 2) or [])] == ["t"],
+      C._orphaned_tool_uses(repairable, 2))
+
+# GENUINELY unrepairable: a tool_result whose tool_use is NOT in the preceding
+# message. We must refuse rather than fabricate a plausible tool_use — an
+# invented block is exactly the kind of confident fiction this project exists
+# to refuse.
+unrepairable = [user("a"), user_result(), asst()]
+check("a tool_result with no recoverable tool_use returns None from the "
+      "repair check — we refuse rather than fabricate a block",
+      C._orphaned_tool_uses(unrepairable, 1) is None,
+      C._orphaned_tool_uses(unrepairable, 1))
+check("and _safe_cut falls back to the floor there (caller passes through)",
+      C._safe_cut(unrepairable, 1, 0) == 0, C._safe_cut(unrepairable, 1, 0))
+
+# The uncovered path, found by mutation testing (third time today a guard had
+# no covering test): prev IS an assistant carrying tool_use blocks, but the
+# IDS DO NOT MATCH the tool_results we need. Reaching this line and returning
+# a fabricated block would put an invented tool_use into a real request — a
+# confident fiction, in the exact place this project refuses one.
+mismatched = [
+    user("a"),
+    {"role": "assistant", "content": [{"type": "tool_use", "id": "OTHER",
+                                       "name": "Bash", "input": {}}]},
+    {"role": "user", "content": [{"type": "tool_result",
+                                  "tool_use_id": "t", "content": "out"}]},
+]
+check("prev is an assistant WITH tool_use but the ids do not match -> refuse, "
+      "never fabricate a block to make the request legal",
+      C._orphaned_tool_uses(mismatched, 2) is None,
+      C._orphaned_tool_uses(mismatched, 2))
+check("a partial match is still a refusal — repairing SOME of the needed "
+      "blocks would emit a request that is still illegal, and blame it on the API",
+      C._orphaned_tool_uses(
+          [user("a"),
+           {"role": "assistant", "content": [{"type": "tool_use", "id": "t1",
+                                              "name": "Bash", "input": {}}]},
+           {"role": "user", "content": [
+               {"type": "tool_result", "tool_use_id": "t1", "content": "a"},
+               {"type": "tool_result", "tool_use_id": "t2", "content": "b"}]}],
+          2) is None)
+
+print("\nboundary repair on the OBSERVED shape:")
+carried = C._orphaned_tool_uses(tool_run, 2)
+check("mid-tool-run cut identifies exactly the tool_use blocks the kept "
+      "tool_result depends on", carried is not None and len(carried) == 1, carried)
+check("a cut where no repair is needed returns [] (empty, not None) — "
+      "'nothing to repair' and 'cannot repair' must not be confused",
+      C._orphaned_tool_uses(tool_run, 1) == [], C._orphaned_tool_uses(tool_run, 1))
 check("a cut at index 0 is never legal — the prefix must precede a user turn",
       C._safe_cut([user(), user()], 0, 0) == 0)
 
