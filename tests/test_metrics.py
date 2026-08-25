@@ -147,6 +147,12 @@ check("an unexplained drop (no curation between) is BLANK, never a fake cliff",
 check("the interleaved row does NOT poison the chain: the parent's next turn "
       "reports its REAL growth (449), not a fabricated +20955 wall",
       ph[2]["tokens_in"] == "449", ph[2])
+check("the interleaved row is MARKED, not merely blanked — a reader must be "
+      "able to tell 63 subagent conversations from 3 real turns on one axis",
+      "interleaved" in ph[1]["note"], ph[1])
+check("the parent's real turns are NOT marked interleaved",
+      "interleaved" not in ph[0]["note"] and "interleaved" not in ph[2]["note"],
+      (ph[0]["note"], ph[2]["note"]))
 check("no fabricated 20k spike appears anywhere in the file",
       all(abs(int(r["tokens_in"])) < 20000
           for r in ph if r["tokens_in"] not in ("", None)))

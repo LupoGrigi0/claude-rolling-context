@@ -249,6 +249,17 @@ class MetricsWriter:
                     f"(session {key[:8] or '(none)'}); tokens_in left BLANK "
                     f"and the delta chain preserved — this is an interleaved "
                     f"stream (subagent or harness side-query), not a turn.")
+                # MARK THE ROW, do not just blank its delta. Blanking stops
+                # the fake cliff in tokens_in, but context_tokens is still
+                # PLOTTED — so 63 subagent conversations landed on the same
+                # axis as 3 real turns and the line read as violent noise
+                # around a conversation that was in fact growing smoothly
+                # (69,239 -> 129,278). Lupo saw the graph, said "this doesn't
+                # match my mental model of a context window," and was right:
+                # the instrument was drawing several different minds as one.
+                # A reader cannot separate them unless we say which is which.
+                note = fields.get("note") or ""
+                fields["note"] = (note + "; " if note else "") + "interleaved"
                 return
             if fields.get("tokens_in") is None:
                 fields["tokens_in"] = ctx - prev_ctx

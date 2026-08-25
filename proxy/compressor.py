@@ -240,14 +240,62 @@ class RollingCompressor:
         - messages[cut-1] (last summarized) must carry no tool_use, or its
           tool_results would be orphaned in the kept half.
         """
-        while cut > floor:
-            m = messages[cut]
-            starts_clean = m.get("role") == "user" and not self._has_tool_result(m)
-            prev_clean = not self._has_tool_use(messages[cut - 1])
-            if starts_clean and prev_clean:
-                return cut
-            cut -= 1
-        return cut
+        def legal(i):
+            if i <= 0 or i >= len(messages):
+                return False
+            m = messages[i]
+            return (m.get("role") == "user"
+                    and not self._has_tool_result(m)
+                    and not self._has_tool_use(messages[i - 1]))
+
+        # BACKWARD first: it keeps MORE than the target asked for, which is the
+        # conservative direction — we evict less than requested, never more.
+        back = cut
+        while back > floor:
+            if legal(back):
+                return back
+            back -= 1
+
+        # Nothing legal going back. Historically this returned `floor`, the
+        # caller saw keep_from_idx <= start_idx, logged "Not enough old
+        # messages to compress", and passed through — i.e. FERRY SILENTLY DID
+        # NOTHING.
+        #
+        # That is not a rare corner. Tool-dense work (read a file, run a
+        # command, edit, repeat) produces long unbroken runs of
+        # tool_use/tool_result with no plain user turn between them, so the
+        # backward walk can cross the entire conversation without finding a
+        # single legal boundary. Observed live 2026-08-25: three peer
+        # instances doing real project work hit the 30k trigger five times
+        # between them and evicted NOTHING; one reached 129,278 tokens on a
+        # 30,000 trigger while Ferry watched.
+        #
+        # So: FERRY DEGRADED TO A NO-OP EXACTLY UNDER THE TRAFFIC THAT NEEDS
+        # IT MOST — and said so only in an INFO line nobody was reading.
+        #
+        # Searching FORWARD keeps LESS than the target, i.e. evicts MORE than
+        # asked. That is the right way to be wrong: overshooting the target
+        # costs some recent context, undershooting to zero costs the entire
+        # mechanism.
+        fwd = cut + 1
+        while fwd < len(messages) - 1:      # never keep zero messages
+            if legal(fwd):
+                log.info(
+                    f"No legal cut between {floor} and {cut} (unbroken "
+                    f"tool-call run); searching forward found {fwd}. Keeping "
+                    f"LESS than target rather than curating nothing.")
+                return fwd
+            fwd += 1
+
+        # Genuinely nowhere legal to cut in either direction. Say so loudly:
+        # the caller will pass through, and a silent pass-through is how this
+        # went unnoticed in the first place.
+        log.warning(
+            f"[FERRY] NO legal cut point exists in either direction "
+            f"({len(messages)} messages, floor={floor}, target cut={cut}). "
+            f"Curation cannot run on this conversation shape — context will "
+            f"keep growing. This is a real gap, not a quiet no-op.")
+        return floor
 
     def _has_tool_use(self, message: dict) -> bool:
         content = message.get("content", "")
