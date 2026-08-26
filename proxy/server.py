@@ -57,6 +57,102 @@ LISTEN_PORT = endpoints.LISTEN_PORT
 UPSTREAM_URL = endpoints.load_upstream(LISTEN_PORT)
 TRIGGER_TOKENS = int(os.environ.get("ROLLING_CONTEXT_TRIGGER") or "100000")
 TARGET_TOKENS = int(os.environ.get("ROLLING_CONTEXT_TARGET") or "40000")
+
+# ---------------------------------------------------------------------------
+# THRASH DETECTOR — convergence, not rate.
+#
+# 2026-08-26: three instances burned 12.1 MILLION input tokens in three minutes
+# while moving almost nothing. 21 curations in two minutes, two turns evicted
+# each time, context pinned in the low 83,000s against a target of 12,000.
+#
+# The cause was an IRREDUCIBLE FLOOR: system prompt + MCP tool definitions +
+# CLAUDE.md came to ~83,000 tokens, none of which is a conversation turn, so
+# Ferry could not evict any of it. A target below the floor is unsatisfiable,
+# so every request re-triggered and evicted the only two turns available.
+#
+# Lupo, shown the log, asked the right question: might it just be "doing the
+# right thing only really really fast"? That is what makes rate the wrong
+# signal. Fast curation that reaches target is Ferry working; fast curation
+# that plateaus is Ferry on a treadmill, and from outside they look identical.
+#
+#   THRASHING IS HIGH ACTIVITY WITH NO CONVERGENCE TOWARD TARGET.
+#
+# So measure WHERE A CURATION LANDS, not how often one happens. Note that
+# comparing trigger-to-trigger would false-positive on a HEALTHY run: after a
+# good curation the context climbs back to the trigger, so consecutive triggers
+# always sit at about the same level. The landing point is the honest signal.
+#
+# Observed, and all three cases must classify correctly:
+#   thrash     landed ~83,840  target  12,000  -> unproductive
+#   fairie     landed  96,277  target 100,000  -> productive (under)
+#   passenger  landed 111,007  target 100,000  -> productive (short but real)
+#
+# A single short cycle self-corrects on the next trigger. A SEQUENCE of them
+# that never reaches target is thrashing wearing a larger number, so we strike
+# out rather than trip on one.
+THRASH_TOLERANCE = float(os.environ.get("ROLLING_CONTEXT_THRASH_TOLERANCE") or "1.25")
+THRASH_STRIKES = int(os.environ.get("ROLLING_CONTEXT_THRASH_STRIKES") or "3")
+
+_convergence = {
+    "awaiting": False,     # a curation is in flight; watch where it lands
+    "strikes": 0,          # consecutive landings that missed target
+    "locked_out": False,   # stop curating: we are provably not converging
+    "last_landing": None,
+}
+
+
+def _thrash_note_landing(total_input, log, metrics, model=None, window=None):
+    """Called on the first request carrying a freshly injected prefix.
+
+    That request's token count IS the landing point of the curation that
+    produced it -- the one number that says whether the cycle accomplished
+    anything. Everything else (turns evicted, bytes archived) can look healthy
+    while the resident set does not move.
+    """
+    if not _convergence["awaiting"]:
+        return
+    _convergence["awaiting"] = False
+    _convergence["last_landing"] = total_input
+    ceiling = TARGET_TOKENS * THRASH_TOLERANCE
+    if total_input <= ceiling:
+        if _convergence["strikes"]:
+            log.info(f"[FERRY] convergence restored: landed at {total_input:,} "
+                     f"(target {TARGET_TOKENS:,}) -- strike count reset")
+        _convergence["strikes"] = 0
+        return
+    _convergence["strikes"] += 1
+    log.warning(
+        f"[FERRY] curation landed at {total_input:,}, target {TARGET_TOKENS:,} "
+        f"(ceiling {ceiling:,.0f}) -- strike {_convergence['strikes']}/{THRASH_STRIKES}")
+    if _convergence["strikes"] >= THRASH_STRIKES and not _convergence["locked_out"]:
+        # Announce ONCE, on the transition. A warning that repeats every cycle
+        # is a warning people learn to scroll past -- and this one has to still
+        # be findable in a log six hours later.
+        _convergence["locked_out"] = True
+        log.warning(
+            f"[FERRY] *** NOT CONVERGING -- CURATION DISABLED *** {THRASH_STRIKES} "
+            f"consecutive cycles failed to reach target. The unevictable floor is "
+            f"at least {total_input:,} tokens (system prompt + tool definitions + "
+            f"CLAUDE.md are not conversation turns and cannot be evicted). "
+            f"Raise ROLLING_CONTEXT_TARGET above that floor and restart. "
+            f"Serving requests untouched until then -- a Ferry that declines to "
+            f"curate costs nothing; one that curates uselessly bills by the token "
+            f"AND invalidates prompt caching on every cycle.")
+        if metrics:
+            metrics.row("error", model=model, window=window,
+                        note=f"thrash lockout: {THRASH_STRIKES} cycles landed above "
+                             f"{ceiling:,.0f}; floor >= {total_input:,}; "
+                             f"target={TARGET_TOKENS}")
+
+
+def _thrash_maybe_clear(total_input, log):
+    """A context genuinely below target means the situation changed -- a new
+    session, a smaller tool set. Do not stay locked out forever on old evidence."""
+    if _convergence["locked_out"] and total_input < TARGET_TOKENS:
+        log.info(f"[FERRY] context is {total_input:,}, below target "
+                 f"{TARGET_TOKENS:,} -- clearing thrash lockout")
+        _convergence["locked_out"] = False
+        _convergence["strikes"] = 0
 # Empty = native mode compresses with the session's own model (prompt-cache
 # hit); set to pin a specific summarizer model.
 SUMMARIZER_MODEL = os.environ.get("ROLLING_CONTEXT_MODEL") or ""
@@ -1057,6 +1153,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     marks.append("estimate:chars/4")
                 if injected:
                     marks.append("injected")
+                    # THIS request carries a freshly curated prefix, so its
+                    # token count is where the last curation actually LANDED.
+                    # It is the only number that says whether the cycle
+                    # accomplished anything (see THRASH DETECTOR above).
+                    if total_input:
+                        _thrash_note_landing(total_input, log, _metrics,
+                                             model=model, window=_window)
                 if disabled:
                     marks.append("off")
                 # A REJECTED REQUEST IS NOT A TURN. On 2026-08-25 three
@@ -1088,6 +1191,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                  note=f"non-turn POST "
                                       f"{urlparse(self.path).path}")
 
+            # A lockout must be able to end. If the context is genuinely
+            # below target the situation has changed -- a new session, a
+            # smaller tool set -- and holding the old verdict would keep Ferry
+            # switched off on stale evidence.
+            if total_input:
+                _thrash_maybe_clear(total_input, log)
+
             # Trigger compression based on token count. The minimum message
             # count keeps us from "compressing" sessions whose bulk is the
             # system prompt / first-message context, which we can't remove.
@@ -1097,6 +1207,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         f"[MSG] {total_input:,} tokens is over trigger, but "
                         f"rolling-context is OFF — not compressing"
                     )
+            elif (total_input > 0 and total_input > TRIGGER_TOKENS
+                  and len(current_messages) >= 6 and _convergence["locked_out"]):
+                # Provably not converging. Curating again would evict a couple
+                # of turns, change nothing, rewrite the prefix, and invalidate
+                # prompt caching -- the expensive no-op that cost 12.1M tokens
+                # on 2026-08-26. Serve the request untouched instead.
+                log.warning(
+                    f"[FERRY] {total_input:,} over trigger but curation is "
+                    f"DISABLED (not converging; raise ROLLING_CONTEXT_TARGET "
+                    f"above the floor and restart)")
             elif total_input > 0 and total_input > TRIGGER_TOKENS and len(current_messages) >= 6:
                 already_compressing = any(
                     e["thread"] is not None and e["thread"].is_alive()
@@ -1116,6 +1236,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         f"Compressing in background..."
                     )
                     entry = store.add()
+                    _convergence["awaiting"] = True
                     t = threading.Thread(
                         target=_do_background_compression,
                         args=(entry, current_messages, auth_headers),
