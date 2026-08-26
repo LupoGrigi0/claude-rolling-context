@@ -90,6 +90,111 @@ TARGET_TOKENS = int(os.environ.get("ROLLING_CONTEXT_TARGET") or "40000")
 # A single short cycle self-corrects on the next trigger. A SEQUENCE of them
 # that never reaches target is thrashing wearing a larger number, so we strike
 # out rather than trip on one.
+# ---------------------------------------------------------------------------
+# HYSTERESIS AND THE TWO-MODE RATE LIMITER (DESIGN-REV2 §20.3, §25).
+#
+# THE BUG: the trigger has no memory of having fired. Curation runs in the
+# background and only takes effect on a LATER request, so Ferry re-triggers on
+# the pre-curation context and evicts a handful of turns for nothing. Observed
+# repeatedly: cycles evicting 851 / 1,182 / 1,291 / 2,320 tokens back to back.
+#
+# THE FIX is not a timer. `_convergence["awaiting"]` is already set when a cycle
+# starts and cleared when its curated prefix is OBSERVED in an incoming request
+# (see _thrash_note_landing). That is exactly the question "has the last cycle
+# landed yet?" -- an OBSERVATION, not a guess about how long compression takes.
+# Do not fire again until it has.
+#
+# THE RATE LIMITS are Lupo's (2026-08-26): a minimum interval, and a cap per
+# window. And so is the caveat that makes them two-mode -- a limiter that is
+# correct in the steady state can be catastrophic in a panic:
+#
+#   "a model pulls in something huge, goes way over budget, and ferry freaks
+#    out... ferry needs to do 5 or 6 max evictions to pull a model back under
+#    target.. if a tuning parameter prevents that kind of reaction... that could
+#    lead to a less than desirable outcome."
+#
+# So RECOVERY MODE suspends the rate limits while context is above trigger AND
+# the last cycle actually moved it down. It never suspends the landing check:
+# firing before the previous cycle lands is useless in every mode.
+#
+#   A limiter must prevent THRASHING and never prevent WORKING,
+#   and "is it still coming down?" is what tells those apart.
+#
+# That is the same discriminator as the thrash detector: convergence, not rate.
+# How long to wait for a cycle to be OBSERVED landing before assuming it never
+# will. Without this the landing check deadlocks: `awaiting` is set when the
+# compression thread starts and cleared only when a request is seen carrying the
+# curated prefix — so a compression that FAILS, or a client that simply stops
+# talking, pins it True forever and Ferry never curates again.
+#
+# Third time this exact shape has bitten in one day (thrash lockout 08:44Z,
+# unreachable-target refusal 12:00Z, this). The pattern: a guard whose release
+# condition depends on the very thing the guard prevents. Every such guard needs
+# a second exit that does not.
+LANDING_TIMEOUT = float(os.environ.get("ROLLING_CONTEXT_LANDING_TIMEOUT") or "90")
+MIN_CYCLE_INTERVAL = float(os.environ.get("ROLLING_CONTEXT_MIN_INTERVAL") or "10")
+MAX_CYCLES_PER_WINDOW = int(os.environ.get("ROLLING_CONTEXT_MAX_CYCLES") or "4")
+CYCLE_WINDOW_SECONDS = float(os.environ.get("ROLLING_CONTEXT_CYCLE_WINDOW") or "300")
+
+_hysteresis = {
+    "awaiting_since": 0.0,
+    "last_cycle_at": 0.0,
+    "recent": [],          # monotonic timestamps of recent cycle starts
+    "last_trigger_ctx": None,
+}
+
+
+def _hysteresis_gate(total_input, now, log):
+    """Return (allowed: bool, reason: str). Pure decision, no side effects."""
+    prev_ctx = _hysteresis["last_trigger_ctx"]
+    falling = prev_ctx is not None and total_input < prev_ctx
+    recovery = falling and total_input > TRIGGER_TOKENS
+
+    # 1. THE LANDING CHECK — never suspended by recovery, but it MUST time out.
+    if _convergence["awaiting"]:
+        waited = now - _hysteresis["awaiting_since"]
+        if waited < LANDING_TIMEOUT:
+            return False, (f"previous cycle has not landed yet ({waited:.0f}s; "
+                           f"no request has carried its curated prefix); firing "
+                           f"now would evict a handful of turns for nothing")
+        # Never observed. The compression may have failed, or the client may
+        # simply not echo the prefix. Proceed rather than stall forever.
+        _convergence["awaiting"] = False
+        return True, (f"previous cycle never observed landing after "
+                      f"{waited:.0f}s — proceeding rather than stalling")
+
+    # 2/3. RATE LIMITS — suspended in recovery.
+    if recovery:
+        # prev_ctx cannot be None here (recovery requires `falling`, which
+        # requires it) -- but that is an IMPLICIT coupling, and mutation testing
+        # broke it in one edit: dropping `falling` from the recovery condition
+        # crashed this line with TypeError on None.__format__. A diagnostic that
+        # can crash the request path is not a diagnostic. Format defensively.
+        _was = f"{prev_ctx:,}" if prev_ctx is not None else "?"
+        return True, (f"recovery mode: {_was} -> {total_input:,} and still "
+                      f"above trigger")
+
+    since = now - _hysteresis["last_cycle_at"]
+    if _hysteresis["last_cycle_at"] and since < MIN_CYCLE_INTERVAL:
+        return False, (f"only {since:.1f}s since the last cycle "
+                       f"(minimum {MIN_CYCLE_INTERVAL:.0f}s)")
+
+    recent = [t for t in _hysteresis["recent"] if now - t < CYCLE_WINDOW_SECONDS]
+    _hysteresis["recent"] = recent
+    if len(recent) >= MAX_CYCLES_PER_WINDOW:
+        return False, (f"{len(recent)} cycles in the last "
+                       f"{CYCLE_WINDOW_SECONDS:.0f}s (max {MAX_CYCLES_PER_WINDOW}) "
+                       f"and context is not falling")
+    return True, "ok"
+
+
+def _hysteresis_note_cycle(total_input, now):
+    _hysteresis["awaiting_since"] = now
+    _hysteresis["last_cycle_at"] = now
+    _hysteresis["recent"].append(now)
+    _hysteresis["last_trigger_ctx"] = total_input
+
+
 THRASH_TOLERANCE = float(os.environ.get("ROLLING_CONTEXT_THRASH_TOLERANCE") or "1.25")
 THRASH_STRIKES = int(os.environ.get("ROLLING_CONTEXT_THRASH_STRIKES") or "3")
 
@@ -1255,8 +1360,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     for e in store.compressions
                 )
                 cooldown_left = FAILURE_COOLDOWN - (time.time() - _compression_failed_at)
+                _now = time.monotonic()
+                _gate_ok, _gate_why = _hysteresis_gate(total_input, _now, log)
                 if already_compressing:
                     pass
+                elif not _gate_ok:
+                    # Not an error and not a defect — this is the system
+                    # declining to do useless work. INFO, and say WHY, because
+                    # "Ferry did nothing" was invisible at INFO once already
+                    # (§20) and cost a whole run.
+                    log.info(f"[MSG] {total_input:,} over trigger but HOLDING — {_gate_why}")
                 elif cooldown_left > 0:
                     log.info(
                         f"[MSG] Over trigger but last compression failed — "
@@ -1267,8 +1380,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         f"[MSG] API reported {total_input:,} tokens (trigger: {TRIGGER_TOKENS:,}). "
                         f"Compressing in background..."
                     )
+                    if _gate_why != "ok":
+                        log.info(f"[MSG] {_gate_why}")
                     entry = store.add()
                     _convergence["awaiting"] = True
+                    _hysteresis_note_cycle(total_input, _now)
                     t = threading.Thread(
                         target=_do_background_compression,
                         args=(entry, current_messages, auth_headers),

@@ -76,6 +76,16 @@ def clean_env(home, **extra):
               "ROLLING_CONTEXT_DISABLE", "ROLLING_CONTEXT_HOME"):
         env.pop(k, None)
     env.update(HOME=home, USERPROFILE=home)
+    # NEUTRALISE HYSTERESIS. This file tests toggle SEMANTICS and uses "did it
+    # compress?" as the observable, posting turns seconds apart. The hysteresis
+    # gate (2026-08-26) correctly suppresses back-to-back cycles, which would
+    # make these assertions fail for a reason that has nothing to do with the
+    # toggle. Neutralise it HERE, explicitly and visibly, rather than weakening
+    # the production defaults to keep a test green — the limiter is real and the
+    # defaults are the ones the fleet runs.
+    env.setdefault("ROLLING_CONTEXT_MIN_INTERVAL", "0")
+    env.setdefault("ROLLING_CONTEXT_MAX_CYCLES", "999")
+    env.setdefault("ROLLING_CONTEXT_LANDING_TIMEOUT", "0")
     env.update(extra)
     return env
 
