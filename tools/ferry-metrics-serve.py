@@ -135,6 +135,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 500,
                 ("ferry-metrics.html is missing next to this script (%s): %s\n" % (PAGE, exc)).encode("utf-8"),
             )
+        # Name the mind. Three of these pages side by side were identical but
+        # for the port number, so there was no way to say "look at passenger at
+        # 12:54" without counting browser tabs (2026-08-26).
+        name = getattr(self.server, "instance_name", "") or ""
+        body = body.replace(b"__FERRY_INSTANCE__",
+                            name.encode("utf-8", "replace"))
         self._send(200, body, "text/html; charset=utf-8")
 
     def _csv(self):
@@ -159,6 +165,9 @@ class Server(socketserver.ThreadingTCPServer):
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Serve the Ferry live metrics page.")
     ap.add_argument("--data", required=True, help="FERRY_DATA dir holding metrics.csv")
+    ap.add_argument("--name", default=None,
+                    help="instance name shown in the page title (default: "
+                         "basename of --data)")
     ap.add_argument("--port", type=int, default=5610, help="TCP port (default 5610; 0 picks a free one)")
     ap.add_argument("--bind", default="127.0.0.1", help="interface to bind (default 127.0.0.1)")
     ap.add_argument("--quiet", action="store_true", help="do not log each request")
@@ -191,6 +200,9 @@ def main(argv=None):
         return 1
     httpd.csv_path = csv_path
     httpd.quiet = args.quiet
+    # Default the name to the FERRY_DATA basename -- for the fleet that is
+    # exactly "passenger" / "ferry" / "fairie", so no caller has to pass it.
+    httpd.instance_name = args.name or os.path.basename(data.rstrip(os.sep))
 
     host, port = httpd.server_address[0], httpd.server_address[1]
     shown = "[%s]" % host if ":" in host else host

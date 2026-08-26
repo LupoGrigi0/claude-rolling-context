@@ -4,6 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
+<!-- The instance name. ferry-metrics-serve.py substitutes __FERRY_INSTANCE__
+     with the basename of its --data dir. Left unsubstituted (page opened
+     straight off disk) the JS falls back and nothing breaks.
+     Added 2026-08-26: Lupo had three of these graphs open side by side,
+     identical but for the port number, with no way to say "look at passenger
+     at 12:54" without counting browser tabs. From his side of the glass the
+     instance identity was simply absent. -->
+<meta name="ferry-instance" content="__FERRY_INSTANCE__">
 <title>Ferry — live context metrics</title>
 <style>
 /* ---------------------------------------------------------------------------
@@ -229,7 +237,7 @@ tbody tr:last-child td { border-bottom: 0; }
 <div class="viz-root" id="root">
 
   <div class="masthead">
-    <h1>Ferry — context metrics</h1>
+    <h1 id="h1">Ferry — context metrics</h1>
     <span class="sub" id="sub">moved, not lost</span>
     <span class="spacer"></span>
     <span class="pill"><span class="dot" id="livedot"></span><span id="livetxt">connecting…</span></span>
@@ -618,6 +626,19 @@ var FM = (function () {
   var NS = "http://www.w3.org/2000/svg";
   var $ = function (id) { return document.getElementById(id); };
 
+  // Which mind is this? Empty string when the placeholder was never
+  // substituted, so a page opened straight off disk degrades to the old title.
+  var FERRY_NAME = (function () {
+    var m = document.querySelector('meta[name="ferry-instance"]');
+    var v = m ? (m.getAttribute("content") || "") : "";
+    return (!v || v.indexOf("__FERRY") === 0) ? "" : v;
+  })();
+  if (FERRY_NAME) {
+    document.title = FERRY_NAME + " — Ferry context metrics";
+    var _h1 = $("h1");
+    if (_h1) _h1.textContent = FERRY_NAME + " — Ferry context metrics";
+  }
+
   var svg = $("svg"), tip = $("tip"), plotwrap = $("plotwrap");
   var lastText = null, model = null, parsed = null, lastGood = 0, bannerLock = "";
   var pointer = null;   // {px, py} in svg pixel space
@@ -740,7 +761,7 @@ var FM = (function () {
       else setBanner("", "");
 
       setLive("live", model.rows.length + " events");
-      $("sub").textContent = "moved, not lost" + (model.mode ? " · " + model.mode + " mode" : "") + (model.stats.model ? " · " + model.stats.model : "");
+      $("sub").textContent = "moved, not lost" + (FERRY_NAME ? " · " + FERRY_NAME : "") + (model.mode ? " · " + model.mode + " mode" : "") + (model.stats.model ? " · " + model.stats.model : "");
 
       fillTiles(model);
       fillTable(parsed);
