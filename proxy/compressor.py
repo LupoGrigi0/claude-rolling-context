@@ -640,12 +640,52 @@ class RollingCompressor:
 
         Returns the compressed message list, or None when there is nothing
         worth compressing (callers must not build a compression entry then)."""
-        # Use real API token count to determine what fraction of content to keep
+        # THE DENOMINATOR BUG (found 2026-08-26 by instrumenting rather than
+        # guessing; DESIGN-REV2 §23).
+        #
+        # `target / real_token_count` divides by the WHOLE REQUEST -- system
+        # prompt, tool definitions, and messages -- but the ratio is then
+        # applied to `messages` ALONE. On a live fairy the split was:
+        #
+        #     forwarded payload  639,962 bytes -> 170,224 tokens  (3.76 ch/tok)
+        #     messages only      231,867 chars ->  ~57,966 tokens  (36%)
+        #     system + tools                    -> ~112,258 tokens (UNEVICTABLE)
+        #
+        # So Ferry computed keep_ratio = 140,000/170,224 = 82.2% and kept 82% of
+        # the messages, when reaching a 140,000 target actually required keeping
+        # (140,000 - 112,258)/57,966 = 47.9% of them. It kept nearly TWICE what
+        # it should, every cycle, on every instance -- which is why evictions ran
+        # at half the intended size, why the estimate-vs-actual gap was negative
+        # on every cycle, and why two different instances with different work
+        # both stalled at a floor of ~134,000.
+        #
+        # Subtract the unevictable scaffolding from BOTH sides before dividing.
         if real_token_count and real_token_count > 0:
-            keep_ratio = self.target_tokens / real_token_count
+            msg_chars = self._count_chars(messages)
+            msg_tokens = max(1, msg_chars // 4)          # estimate, marked as one
+            unevictable = max(0, real_token_count - msg_tokens)
+            allowed = self.target_tokens - unevictable
+            if allowed <= 0:
+                # The target is BELOW the unevictable floor. No amount of
+                # eviction can reach it, and pretending otherwise is what
+                # produced the 12.1M-token thrash. Refuse, loudly, with the
+                # number the operator needs.
+                log.warning(
+                    f"TARGET UNREACHABLE: system prompt + tool definitions are "
+                    f"~{unevictable:,} tokens, which already exceeds the target "
+                    f"of {self.target_tokens:,}. Even evicting every message "
+                    f"leaves ~{unevictable:,}. Raise ROLLING_CONTEXT_TARGET "
+                    f"above {unevictable:,} (and the trigger above that). "
+                    f"Passing through uncompressed."
+                )
+                return None
+            keep_ratio = min(1.0, allowed / msg_tokens)
             log.info(
                 f"Keep ratio: {keep_ratio:.1%} "
-                f"(target={self.target_tokens:,} / real={real_token_count:,})"
+                f"(target={self.target_tokens:,} - unevictable~{unevictable:,} "
+                f"= {allowed:,} allowed / messages~{msg_tokens:,} est) "
+                f"[was {self.target_tokens/real_token_count:.1%} under the "
+                f"pre-2026-08-26 whole-request denominator]"
             )
         else:
             # Fallback: keep half (conservative)

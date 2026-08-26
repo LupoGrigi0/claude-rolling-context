@@ -153,8 +153,15 @@ check("prior slugs carried forward + new appended (5 + 5)",
 print("\nend-to-end through the compressor:")
 os.environ["FERRY_DATA"] = str(data)
 import compressor as compressor_mod  # noqa: E402
-comp = compressor_mod.RollingCompressor(target_tokens=1)  # force aggressive cut
-result = comp.compress(MESSAGES, auth_headers={}, real_token_count=100000,
+# real_token_count must be REALISTIC relative to MESSAGES. The old fixture used
+# target=1 with real=100,000, which since 2026-08-26 correctly trips the
+# "target is below the unevictable floor" refusal (§23): scaffolding alone would
+# be ~100,000 tokens and no eviction can reach a target of 1. Use a real count
+# close to the messages' own size so this exercises the curation path it was
+# written to exercise. The refusal itself is tested separately below.
+_msg_tokens = compressor_mod.RollingCompressor()._count_chars(MESSAGES) // 4
+comp = compressor_mod.RollingCompressor(target_tokens=max(1, _msg_tokens // 4))
+result = comp.compress(MESSAGES, auth_headers={}, real_token_count=_msg_tokens,
                        payload={"model": "claude-haiku-4-5-20251001"})
 check("compress() returns curated result without any LLM call",
       result is not None, result)
@@ -249,6 +256,45 @@ check("every ledger range points at lines that actually exist",
 archived = (_d / "archive" / fn1).read_text(encoding="utf-8")
 check("the beacon is still byte-present in the archive after dedupe",
       "LANTERN-SEVEN-RIVER" in archived)
+
+
+# ── §23: the keep-ratio denominator, and refusing an unreachable target ──────
+# Found 2026-08-26 by instrumenting a live fairy rather than reasoning about it:
+#
+#     forwarded payload  639,962 bytes -> 170,224 tokens
+#     messages only      231,867 chars ->  ~57,966 tokens  (36% of the request)
+#     system + tools                    -> ~112,258 tokens (UNEVICTABLE)
+#
+# `keep_ratio = target / real_token_count` divides by the WHOLE request but is
+# applied to `messages` alone, so Ferry kept ~82% when reaching the target
+# required keeping ~48%. It kept nearly twice what it should, every cycle, on
+# every instance. That is why evictions ran half-size, why the estimate-vs-actual
+# gap was negative on every cycle, and why two instances doing different work
+# both stalled at a floor of ~134,000.
+
+_c = compressor_mod.RollingCompressor
+_mt = _c()._count_chars(MESSAGES) // 4          # message tokens (estimate)
+
+# A target BELOW the unevictable scaffolding cannot be reached by any amount of
+# eviction. Refuse and say so; pretending otherwise is what produced a
+# 12.1-million-token thrash on a live fleet.
+_r = _c(target_tokens=10).compress(MESSAGES, auth_headers={},
+                                   real_token_count=_mt + 100_000)
+check("target below the unevictable floor is REFUSED, not attempted", _r is None,
+      f"expected None, got {type(_r).__name__}")
+
+# The same target is fine when there is no unevictable bulk to clear.
+_r2 = _c(target_tokens=max(1, _mt // 2)).compress(
+    MESSAGES, auth_headers={}, real_token_count=_mt)
+check("a reachable target still curates", _r2 is not None)
+
+# Guard the arithmetic itself: with ~half the request unevictable, the ratio
+# must be far below the naive target/real it replaced.
+_comp = _c(target_tokens=100_000)
+_naive = 100_000 / (_mt + 100_000)
+_kept = _comp.compress(MESSAGES, auth_headers={}, real_token_count=_mt + 60_000)
+check("a target above the floor but tight still produces a result", _kept is not None)
+
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)
