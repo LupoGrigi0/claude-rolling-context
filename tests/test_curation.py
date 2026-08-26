@@ -278,10 +278,20 @@ _mt = _c()._count_chars(MESSAGES) // 4          # message tokens (estimate)
 # A target BELOW the unevictable scaffolding cannot be reached by any amount of
 # eviction. Refuse and say so; pretending otherwise is what produced a
 # 12.1-million-token thrash on a live fleet.
+# An unreachable target must NOT stop compression. The first version of this
+# returned None, and that was wrong in a way already fixed once the same day:
+# refusing means context grows unbounded to the model's hard limit, which is the
+# deadlock the thrash lockout had at 08:44Z. Declining to act is not the safe
+# direction when the thing you decline is the only thing that lowers context.
+# Correct behaviour: warn with the real number, evict as hard as safe, and let
+# the thrash detector judge convergence — which is its job and it already exists.
 _r = _c(target_tokens=10).compress(MESSAGES, auth_headers={},
                                    real_token_count=_mt + 100_000)
-check("target below the unevictable floor is REFUSED, not attempted", _r is None,
-      f"expected None, got {type(_r).__name__}")
+check("an unreachable target still COMPRESSES (refusing would deadlock)",
+      _r is not None, "expected a compressed list, got None")
+check("and it compresses hard — result is shorter than the input",
+      _r is not None and len(_r) < len(MESSAGES),
+      f"input {len(MESSAGES)} msgs, got {len(_r) if _r else None}")
 
 # The same target is fine when there is no unevictable bulk to clear.
 _r2 = _c(target_tokens=max(1, _mt // 2)).compress(

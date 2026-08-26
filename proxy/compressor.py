@@ -59,6 +59,10 @@ LEGACY_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 # curation (verbatim archive + pointer index + carry render). No LLM call.
 # See proxy/curation.py and github.com/LupoGrigi0/ferry DESIGN-REV2.md.
 CURATION_MODE = (os.environ.get("ROLLING_CONTEXT_CURATION") or "").lower()
+# Never evict EVERYTHING: a mind with no recent turns cannot continue the work
+# it was doing. This is the floor keep_ratio, used when the target is below the
+# unevictable scaffolding and Ferry evicts as hard as it safely can.
+MIN_KEEP_RATIO = float(os.environ.get("ROLLING_CONTEXT_MIN_KEEP") or "0.10")
 
 ssl_ctx = ssl.create_default_context()
 
@@ -666,20 +670,29 @@ class RollingCompressor:
             unevictable = max(0, real_token_count - msg_tokens)
             allowed = self.target_tokens - unevictable
             if allowed <= 0:
-                # The target is BELOW the unevictable floor. No amount of
-                # eviction can reach it, and pretending otherwise is what
-                # produced the 12.1M-token thrash. Refuse, loudly, with the
-                # number the operator needs.
+                # The target is BELOW the unevictable floor: no amount of
+                # eviction can reach it. Say so with the number the operator
+                # needs -- but KEEP COMPRESSING, as hard as is safe.
+                #
+                # The first version of this refused outright (`return None`) and
+                # was wrong in a way I had already fixed once today: refusing
+                # means context grows without bound to the model's hard limit,
+                # which is exactly the deadlock the thrash lockout had at 08:44Z.
+                # Declining to act is not the safe direction when the thing you
+                # decline is the only thing that reduces context.
+                #
+                # Evict maximally and let the thrash detector judge convergence.
+                # That is its job, it already exists, and it reports honestly.
                 log.warning(
                     f"TARGET UNREACHABLE: system prompt + tool definitions are "
-                    f"~{unevictable:,} tokens, which already exceeds the target "
-                    f"of {self.target_tokens:,}. Even evicting every message "
-                    f"leaves ~{unevictable:,}. Raise ROLLING_CONTEXT_TARGET "
-                    f"above {unevictable:,} (and the trigger above that). "
-                    f"Passing through uncompressed."
+                    f"~{unevictable:,} tokens, already above the target of "
+                    f"{self.target_tokens:,}. Even evicting every message leaves "
+                    f"~{unevictable:,}. Raise ROLLING_CONTEXT_TARGET above "
+                    f"{unevictable:,} (and the trigger above that). Evicting as "
+                    f"much as possible meanwhile."
                 )
-                return None
-            keep_ratio = min(1.0, allowed / msg_tokens)
+                allowed = max(1, int(msg_tokens * MIN_KEEP_RATIO))
+            keep_ratio = min(1.0, max(MIN_KEEP_RATIO, allowed / msg_tokens))
             log.info(
                 f"Keep ratio: {keep_ratio:.1%} "
                 f"(target={self.target_tokens:,} - unevictable~{unevictable:,} "
