@@ -25,6 +25,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -45,6 +46,95 @@ GIST_CHARS = 80
 CARRY_HEADER = "=== CARRY (verbatim, append-only — never summarized) ==="
 INDEX_HEADER = "=== ARCHIVED TURNS (verbatim at pointers; fetch to recall in full) ==="
 SLUG_PREFIX = "- ["
+
+# ---------------------------------------------------------------------------
+# THE INDEX RATCHET, and the tier that bounds it.
+#
+# Measured 2026-08-26 on a live passenger (DESIGN-REV2 §22): the pointer index
+# is CUMULATIVE and UNEVICTABLE. It is what makes the archive reachable, so
+# Ferry can never evict it -- and `prior_slugs + new_slugs` grew it by one line
+# per evicted turn, forever, at ~29 tokens a line.
+#
+#     cycle 49    2 turns evicted    index  1,414 tok
+#     cycle 50  114 turns evicted    index  4,658 tok
+#     cycle 51  104 turns evicted    index  7,303 tok
+#
+# ~2,900 tokens of PERMANENT floor per cycle. Ferry's floor rose every time
+# Ferry did its job, and the better it worked the faster it climbed. Left alone
+# the index passes target, then trigger, and the system thrashes BY DESIGN.
+#
+#   A memory system whose index grows without bound has merely moved the
+#   problem. The window fills with the addresses of things that are not in it.
+#
+# THE TIER: the newest INDEX_DETAIL_LINES slugs keep their per-turn gists --
+# that is the case a mind actually uses, looking back at what it just lost.
+# Everything older collapses into range lines, which is free because one
+# cycle's slugs are CONTIGUOUS BY CONSTRUCTION (the archive_write row already
+# records them as `#L564-L677`). 114 lines become one: ~29 tokens instead of
+# ~3,300.
+#
+# Reconstructability (§14.1) is untouched: the archive itself does not change,
+# ferry-fetch already accepts ranges, and every byte stays addressable. What is
+# traded away is per-turn browsability of OLD spans -- the right trade against
+# an index that prices itself out of the window.
+#
+# Collapsed lines are re-parseable on purpose, so a later compaction merges
+# adjacent ranges rather than stacking a second generation of clutter.
+INDEX_DETAIL_LINES = int(os.environ.get("FERRY_INDEX_DETAIL_LINES") or "200")
+_SLUG_PTR = re.compile(
+    r"→\s*(?P<file>archive_[0-9]{8}\.jsonl)#L(?P<first>[0-9]+)"
+    r"(?:-L?(?P<last>[0-9]+))?\s*$")
+
+
+def _parse_slug(line):
+    """('archive_YYYYMMDD.jsonl', first, last) or None. Never guesses."""
+    m = _SLUG_PTR.search(line)
+    if not m:
+        return None
+    first = int(m.group("first"))
+    last = int(m.group("last") or first)
+    if last < first:
+        return None
+    return m.group("file"), first, last
+
+
+def compact_index(slugs, keep_detail=None):
+    """Collapse all but the newest `keep_detail` slugs into contiguous ranges.
+
+    Order is preserved: the index reads oldest-first, and a mind following a
+    pointer needs the ranges to stay in the order the turns happened. Any line
+    that cannot be parsed is passed through UNTOUCHED rather than dropped --
+    losing an index line loses the only address an archived turn has, which is
+    the one failure this whole subsystem exists to prevent.
+    """
+    keep = INDEX_DETAIL_LINES if keep_detail is None else keep_detail
+    if keep < 0 or len(slugs) <= keep:
+        return list(slugs)
+    old, recent = slugs[:len(slugs) - keep], slugs[len(slugs) - keep:]
+
+    out, run = [], None   # run = [file, first, last, turns]
+    def flush():
+        if run is None:
+            return
+        f, a, b, n = run
+        span = f"L{a}" if a == b else f"L{a}-L{b}"
+        out.append(f"{SLUG_PREFIX}archived] {n} turn{'s' if n != 1 else ''} "
+                   f"→ {f}#{span}")
+    for line in old:
+        parsed = _parse_slug(line)
+        if parsed is None:
+            flush(); run = None
+            out.append(line)          # unparseable: keep it verbatim
+            continue
+        f, a, b = parsed
+        n = b - a + 1
+        if run and run[0] == f and a == run[2] + 1:
+            run[2] = b; run[3] += n
+        else:
+            flush(); run = [f, a, b, n]
+    flush()
+    return out + list(recent)
+
 
 
 def _ferry_core_on_path():
@@ -325,6 +415,14 @@ class FerryCurationProducer:
 
         prior_slugs = [ln for ln in (existing_payload or "").splitlines()
                        if ln.startswith(SLUG_PREFIX)]
+        # Bound the ratchet (§22). Compaction happens on the PRIOR index only,
+        # so this cycle's own slugs always land with full per-turn gists -- the
+        # detail is freshest exactly where a mind is most likely to look.
+        before_n = len(prior_slugs)
+        prior_slugs = compact_index(prior_slugs)
+        if len(prior_slugs) < before_n:
+            log.info(f"Ferry index compacted: {before_n} -> {len(prior_slugs)} "
+                     f"lines (ranges collapsed; every byte still addressable)")
 
         sections = []
         carry = self._render_carry()
