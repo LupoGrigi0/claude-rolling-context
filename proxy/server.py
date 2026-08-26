@@ -98,6 +98,7 @@ _convergence = {
     "strikes": 0,          # consecutive landings that missed target
     "locked_out": False,   # stop curating: we are provably not converging
     "last_landing": None,
+    "floor_at_lockout": None,
 }
 
 
@@ -129,6 +130,7 @@ def _thrash_note_landing(total_input, log, metrics, model=None, window=None):
         # is a warning people learn to scroll past -- and this one has to still
         # be findable in a log six hours later.
         _convergence["locked_out"] = True
+        _convergence["floor_at_lockout"] = total_input
         log.warning(
             f"[FERRY] *** NOT CONVERGING -- CURATION DISABLED *** {THRASH_STRIKES} "
             f"consecutive cycles failed to reach target. The unevictable floor is "
@@ -146,11 +148,41 @@ def _thrash_note_landing(total_input, log, metrics, model=None, window=None):
 
 
 def _thrash_maybe_clear(total_input, log):
-    """A context genuinely below target means the situation changed -- a new
-    session, a smaller tool set. Do not stay locked out forever on old evidence."""
-    if _convergence["locked_out"] and total_input < TARGET_TOKENS:
+    """End a lockout when the situation has genuinely changed.
+
+    TWO exits, and the second one exists because the first DEADLOCKS.
+    Observed live 2026-08-26 08:36Z: passenger locked out at a floor of 134,043
+    against a target of 100,000. The only clear condition was "context below
+    target" -- but the lockout disables curation, and only curation can lower
+    the context. Locked forever, context climbing toward the model's hard limit,
+    where it would have started rejecting every request at ~180k tokens.
+
+    A safety mechanism whose failure mode is worse than the failure it prevents
+    is not a safety mechanism. It was mine, it shipped six hours earlier, and it
+    had a test suite that never asked whether the exit was reachable.
+
+    Exit 1: context below target -- a genuinely fresh, small conversation.
+    Exit 2: context has grown well ABOVE the floor we locked out at, which means
+            there is substantial NEW evictable material that did not exist when
+            we gave up. Worth one more attempt. This makes the lockout a rate
+            limiter rather than an absolute stop.
+    """
+    if not _convergence["locked_out"]:
+        return
+    if total_input < TARGET_TOKENS:
         log.info(f"[FERRY] context is {total_input:,}, below target "
                  f"{TARGET_TOKENS:,} -- clearing thrash lockout")
+        _convergence["locked_out"] = False
+        _convergence["strikes"] = 0
+        return
+    floor = _convergence.get("floor_at_lockout")
+    if floor is None:
+        return
+    retry_at = max(TRIGGER_TOKENS, floor + max(1, (TRIGGER_TOKENS - TARGET_TOKENS) // 2))
+    if total_input >= retry_at:
+        log.info(f"[FERRY] context {total_input:,} is well above the "
+                 f"{floor:,} floor we locked out at -- there is new evictable "
+                 f"material, retrying curation once")
         _convergence["locked_out"] = False
         _convergence["strikes"] = 0
 # Empty = native mode compresses with the session's own model (prompt-cache

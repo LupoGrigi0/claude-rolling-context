@@ -90,15 +90,56 @@ check("strikes accumulate again from zero, no lockout yet",
 
 # ---- The lockout must be able to END -------------------------------------
 
+# The lockout MUST be escapable. Observed live 2026-08-26 08:36Z: passenger
+# locked out at a floor of 134,043 against a target of 100,000, and the only
+# exit was "context below target" -- unreachable, because the lockout disables
+# the only mechanism that lowers context. It would have climbed to the model's
+# hard limit and rejected every request. A safety mechanism whose failure mode
+# is worse than the failure it prevents is not one.
+srv.TRIGGER_TOKENS = 150000
 reset(target=100000)
 for _ in range(3): land(140000)
 check("locked out after three", srv._convergence["locked_out"], True)
+check("the floor we locked out at is recorded",
+      srv._convergence["floor_at_lockout"], 140000)
+
+# retry_at = max(TRIGGER, floor + (TRIGGER-TARGET)//2) = max(150000, 165000)
 srv._thrash_maybe_clear(150000, log)
-check("a context still ABOVE target does not clear the lockout",
+check("above target but BELOW the retry threshold: stays locked",
       srv._convergence["locked_out"], True)
+srv._thrash_maybe_clear(164999, log)
+check("one token below the retry threshold: still locked",
+      srv._convergence["locked_out"], True)
+srv._thrash_maybe_clear(165000, log)
+check("at the retry threshold there is new evictable material: unlocks",
+      srv._convergence["locked_out"], False)
+
+reset(target=100000)
+for _ in range(3): land(140000)
 srv._thrash_maybe_clear(40000, log)
 check("a context genuinely below target clears it (new session, smaller tools)",
       srv._convergence["locked_out"], False)
+
+reset(target=100000)
+srv._thrash_maybe_clear(999999, log)
+check("clearing does nothing when not locked out",
+      srv._convergence["locked_out"], False)
+
+# The not-locked-out early return is load-bearing, and mutation testing on
+# 2026-08-26 found it had NO covering test: removing it left all 16 green.
+# What it protects: without the guard, any context observed below target resets
+# the STRIKE COUNTER even when no lockout exists -- so a thrash whose context
+# dips below target between cycles could never accumulate its third strike and
+# would run forever. Third time this week a surviving mutant exposed a guard
+# nothing tested.
+reset(target=100000)
+land(140000); land(140000)
+check("two strikes accumulated", srv._convergence["strikes"], 2)
+srv._thrash_maybe_clear(50000, log)      # a dip below target, NOT locked out
+check("a dip below target must NOT wipe strikes while not locked out",
+      srv._convergence["strikes"], 2)
+land(140000)
+check("so the third strike still locks out", srv._convergence["locked_out"], True)
 
 # ---- A landing nobody was awaiting must be ignored ------------------------
 
