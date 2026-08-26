@@ -208,6 +208,25 @@ class RollingCompressor:
                                         total_chars += len(sub.get("text", ""))
         return total_chars
 
+    def _raw_char_cut(self, messages: list, keep_ratio: float):
+        """Where the char-proportional cut lands BEFORE the forward walk.
+
+        Diagnostic only (§21.4) -- mirrors _find_keep_index's arithmetic exactly
+        and stops at the point the walk begins. Kept separate so the real path
+        is untouched: a diagnostic that changes what it measures is worthless.
+        """
+        if len(messages) <= 4:
+            return 0
+        total_chars = self._count_chars(messages)
+        target_chars = int(total_chars * keep_ratio)
+        accumulated = 0
+        for i in range(len(messages) - 1, -1, -1):
+            msg_chars = self._count_chars([messages[i]])
+            if accumulated + msg_chars > target_chars:
+                return i + 1
+            accumulated += msg_chars
+        return 0
+
     def _find_keep_index(self, messages: list, keep_ratio: float) -> int:
         """Find the cut point: keep the last keep_ratio fraction of content."""
         if len(messages) <= 4:
@@ -635,10 +654,44 @@ class RollingCompressor:
 
         keep_from_idx = self._find_keep_index(messages, keep_ratio)
 
+        # WHY THE TARGET IS MISSED, INSTRUMENTED RATHER THAN ARGUED (§21.4).
+        # Observed 2026-08-26: keep_ratio is a steady ~66% (evict ~34%, ~51k
+        # tokens) while actual evictions run 19-29k. Ferry moves about HALF what
+        # it intends, every cycle, and two mechanisms could do that:
+        #   (a) _find_keep_index computes a char-proportional cut and then WALKS
+        #       FORWARD to the next plain user turn -- which in agentic traffic
+        #       exists only where the human spoke, so the walk can be long and
+        #       always keeps MORE than intended.
+        #   (b) keep_ratio is derived from TOKENS and applied to CHARS. Any
+        #       non-uniformity (JSON tool_results are char-dense) skews it.
+        # These are distinguishable by logging where the char-proportional cut
+        # WOULD have landed versus where the walk actually put it. Log both;
+        # decide from data. Twice tonight I picked the interesting explanation
+        # and was wrong.
+        try:
+            _raw = self._raw_char_cut(messages, keep_ratio)
+            _tot = self._count_chars(messages)
+            _kept_raw = self._count_chars(messages[_raw:]) if _raw is not None else -1
+            _kept_act = self._count_chars(messages[keep_from_idx:])
+            log.info(
+                f"[CUTDIAG] char-proportional idx={_raw} -> would keep "
+                f"{_kept_raw:,} chars ({(_kept_raw/_tot if _tot else 0):.1%}); "
+                f"after forward-walk idx={keep_from_idx} keeps {_kept_act:,} "
+                f"({(_kept_act/_tot if _tot else 0):.1%}); "
+                f"walk moved {keep_from_idx - (_raw if _raw is not None else keep_from_idx)} messages")
+        except Exception as _e:      # diagnostics must never break a curation
+            log.debug(f"[CUTDIAG] unavailable: {_e}")
+
         has_existing_summary = self._has_summary(messages)
         start_idx = 2 if has_existing_summary else 0
 
+        _pre_safe = keep_from_idx
         keep_from_idx = self._safe_cut(messages, keep_from_idx, start_idx)
+        if keep_from_idx != _pre_safe:
+            log.info(f"[CUTDIAG] _safe_cut moved the boundary "
+                     f"{_pre_safe} -> {keep_from_idx} "
+                     f"({'backward: keeps MORE' if keep_from_idx < _pre_safe else 'forward: keeps LESS'}); "
+                     f"start_idx={start_idx} (prefix messages are unevictable)")
 
         if keep_from_idx <= start_idx:
             log.info("Not enough old messages to compress, passing through")
