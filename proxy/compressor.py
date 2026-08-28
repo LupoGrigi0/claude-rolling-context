@@ -173,6 +173,44 @@ CONVERSATION TO COMPRESS:
 Write the chronological summary:"""
 
 
+
+def effective_unevictable(real_token_count, msg_chars, observed_floor=None):
+    """How many tokens of this request Ferry CANNOT evict.
+
+    Two sources, and we take the smaller.
+
+    THE ESTIMATE, `real_token_count - msg_chars/4`, is what shipped first and
+    it runs HIGH. chars/4 underestimates tokens for markdown prose (measured
+    nearer 3.2 chars/token), and because msg_tokens is a SUBTRAHEND the error
+    arrives with its sign flipped: too few message tokens becomes too much
+    unevictable scaffolding.
+
+        An estimate used as a subtrahend inherits its error with the sign
+        flipped.
+
+    THE BOUND is a measurement. Ferry sees the real token count on every
+    request, and context = floor + messages with messages never negative, so
+
+        floor <= the smallest context ever observed
+
+    On 2026-08-28 the estimate claimed ~104,780 and told the operator to raise
+    the target above it. The same proxy then landed a curation at 97,486. You
+    cannot land below a floor, so the estimate was provably wrong -- and its
+    advice was backwards: a higher target evicts LESS.
+
+    The bound can only ever be too LOOSE (never too low), and the estimate has
+    been proven to run high, so min() is the safe combination. With no
+    observation yet, behaviour is exactly what it was before.
+    """
+    msg_tokens = max(1, msg_chars // 4)
+    est = max(0, real_token_count - msg_tokens)
+    # Reject junk rather than letting a 0 or None pin the floor at zero and
+    # silently disable this: blank is not zero, here as everywhere.
+    if isinstance(observed_floor, int) and observed_floor > 0:
+        return min(est, observed_floor)
+    return est
+
+
 class RollingCompressor:
     def __init__(
         self,
@@ -639,6 +677,7 @@ class RollingCompressor:
     # ------------------------------------------------------------------
 
     def compress(self, messages: list, auth_headers: dict, real_token_count: int = None,
+                 observed_floor: int = None,
                  payload: dict = None) -> list:
         """Compress messages using rolling summarization (synchronous).
 
@@ -667,7 +706,8 @@ class RollingCompressor:
         if real_token_count and real_token_count > 0:
             msg_chars = self._count_chars(messages)
             msg_tokens = max(1, msg_chars // 4)          # estimate, marked as one
-            unevictable = max(0, real_token_count - msg_tokens)
+            unevictable = effective_unevictable(real_token_count, msg_chars,
+                                                observed_floor)
             allowed = self.target_tokens - unevictable
             if allowed <= 0:
                 # The target is BELOW the unevictable floor: no amount of
@@ -683,13 +723,25 @@ class RollingCompressor:
                 #
                 # Evict maximally and let the thrash detector judge convergence.
                 # That is its job, it already exists, and it reports honestly.
+                # Say WHICH SOURCE the number came from. This warning tells an
+                # operator to change a production setting, and on 2026-08-28 it
+                # did so on the strength of a chars/4 subtraction that was
+                # ~7,000 too high -- advice that would have made things worse.
+                # A number that drives an action must carry its provenance.
+                _src = ("measured: the smallest context this proxy has actually "
+                        "seen" if (isinstance(observed_floor, int)
+                                   and observed_floor > 0
+                                   and observed_floor <= unevictable)
+                        else "ESTIMATED from chars/4 and historically runs HIGH "
+                             "-- verify before acting")
                 log.warning(
-                    f"TARGET UNREACHABLE: system prompt + tool definitions are "
-                    f"~{unevictable:,} tokens, already above the target of "
-                    f"{self.target_tokens:,}. Even evicting every message leaves "
-                    f"~{unevictable:,}. Raise ROLLING_CONTEXT_TARGET above "
-                    f"{unevictable:,} (and the trigger above that). Evicting as "
-                    f"much as possible meanwhile."
+                    f"TARGET UNREACHABLE: unevictable scaffolding is "
+                    f"~{unevictable:,} tokens ({_src}), at or above the target "
+                    f"of {self.target_tokens:,}. Even evicting every message "
+                    f"leaves ~{unevictable:,}. Consider raising "
+                    f"ROLLING_CONTEXT_TARGET above {unevictable:,} (and the "
+                    f"trigger above that). Evicting as much as possible "
+                    f"meanwhile."
                 )
                 allowed = max(1, int(msg_tokens * MIN_KEEP_RATIO))
             keep_ratio = min(1.0, max(MIN_KEEP_RATIO, allowed / msg_tokens))

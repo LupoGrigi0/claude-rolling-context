@@ -236,6 +236,26 @@ THRASH_TOLERANCE = float(os.environ.get("ROLLING_CONTEXT_THRASH_TOLERANCE") or "
 THRASH_STRIKES = int(os.environ.get("ROLLING_CONTEXT_THRASH_STRIKES") or "3")
 
 
+# ---------------------------------------------------------------------------
+# THE OBSERVED FLOOR. The smallest real context this proxy has ever seen is a
+# hard upper bound on the unevictable scaffolding, because
+#     context = floor + messages,  messages >= 0.
+# That is a MEASUREMENT. The alternative in use until 2026-08-28 was
+# `real_token_count - chars/4`, an estimate that ran high and produced
+# "TARGET UNREACHABLE: ...~104,780..." on a proxy that then landed at 97,486.
+# One integer, and it makes that contradiction impossible.
+_observed = {"floor": None}
+
+
+def _note_observed_floor(real_token_count):
+    """Record a real context measurement. Ignores junk rather than trusting it."""
+    if not isinstance(real_token_count, int) or real_token_count <= 0:
+        return
+    cur = _observed["floor"]
+    if cur is None or real_token_count < cur:
+        _observed["floor"] = real_token_count
+
+
 def _note_gate(reason, total_input, model=None, window=None):
     """Record a curation that was WANTED and DECLINED.
 
@@ -876,7 +896,9 @@ def _do_background_compression(entry: dict, messages: list, auth_headers: dict,
     log.info(f"[BG] Starting compression of {len(messages)} messages...")
     try:
         compressed = compressor.compress(messages, auth_headers,
-                                         real_token_count=real_token_count, payload=payload)
+                                         real_token_count=real_token_count,
+                                         observed_floor=_observed["floor"],
+                                         payload=payload)
         if compressed is None:
             # Nothing worth compressing — don't leave an empty entry behind
             store.remove(entry)
@@ -1366,6 +1388,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
             # delta bounced to the probe's number and back. And the delta is
             # kept per session id, so a subagent (or a second conversation)
             # sharing this proxy can never corrupt another session's chain.
+            # ONLY a real upstream count may set the floor. A chars/4 estimate
+            # is exactly what produced the bad floor in the first place; feeding
+            # estimates back into the bound would launder the same error into
+            # something that looks measured.
+            if not estimated:
+                _note_observed_floor(total_input)
+
             if _metrics:
                 marks = []
                 if estimated:
