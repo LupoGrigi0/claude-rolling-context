@@ -49,8 +49,16 @@ HEADER_LINE = ",".join(HEADER)
 # happens to see on a sibling path (/v1/messages/count_tokens is the common
 # one): recorded so the traffic is not invisible, but deliberately carrying no
 # context_tokens and never touching a delta chain, because it is not a turn.
+# "gate" is a curation that was WANTED and DECLINED: the proxy was over
+# trigger and chose not to act. It exists because hysteresis works by not
+# working, so a healthy hold and a broken trigger are the same absence on a
+# graph -- and an absence is the shape of evidence that has fooled us twice
+# ("Ferry did nothing" invisible at INFO, §20; zero fetches that were a
+# permission error). A decline must leave a positive trace with its reason.
+# It carries context_tokens and note ONLY: no cycle, no tokens_evicted --
+# blank is not zero, and a 0 in tokens_evicted means something far worse.
 EVENTS = ("proxy_start", "request", "probe", "curation", "archive_write",
-          "fetch", "restart", "error")
+          "fetch", "restart", "error", "gate")
 
 # After this many consecutive failures we stop logging (a metrics disk that
 # went read-only would otherwise flood the proxy log line-for-line).

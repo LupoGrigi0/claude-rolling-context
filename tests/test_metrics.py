@@ -67,7 +67,12 @@ check("HEADER_LINE constant agrees with the contract",
       HEADER_LINE == CONTRACT_HEADER, HEADER_LINE)
 check("the contract events are the ones the module knows",
       set(EVENTS) == {"proxy_start", "request", "probe", "curation",
-                      "archive_write", "fetch", "restart", "error"}, EVENTS)
+                      "archive_write", "fetch", "restart", "error",
+                      # "gate": a curation that was WANTED and DECLINED.
+                      # Hysteresis works by NOT curating, so without a
+                      # positive trace a correct hold and a broken trigger
+                      # are the same absence on the graph.
+                      "gate"}, EVENTS)
 check("'request' and 'probe' are distinct events (a turn is not a probe)",
       "request" in EVENTS and "probe" in EVENTS)
 

@@ -198,6 +198,51 @@ def _hysteresis_note_cycle(total_input, now):
 THRASH_TOLERANCE = float(os.environ.get("ROLLING_CONTEXT_THRASH_TOLERANCE") or "1.25")
 THRASH_STRIKES = int(os.environ.get("ROLLING_CONTEXT_THRASH_STRIKES") or "3")
 
+
+def _note_gate(reason, total_input, model=None, window=None):
+    """Record a curation that was WANTED and DECLINED.
+
+    One helper, three call sites, so the contract of a gate row is stated in
+    exactly one place. Written as a helper rather than inline specifically so
+    it can be mutation-tested: the first version of this lived inline at each
+    site, and a mutation that made a gate row claim `tokens_evicted=0`
+    SURVIVED a green suite, because the test was asserting against rows the
+    test itself had written. A fixture I invented cannot test a path I wrote.
+
+    A gate row carries the context it saw and WHY. It must never carry a
+    cycle number or tokens_evicted: blank is not zero, and a 0 in
+    tokens_evicted is a curation that RAN and moved nothing -- the 12.1M
+    token failure -- which is a different and far worse event than one that
+    correctly declined to run.
+    """
+    if not _metrics:
+        return
+    _metrics.row("gate", context_tokens=total_input or None,
+                 model=model, window=window, note=reason)
+
+
+def _params_note():
+    """Every tuning knob this proxy is actually running with, as 'k=v, k=v'.
+
+    Written into the proxy_start row so the visualizer draws the watermark
+    lines from the values the PROXY used, not from defaults typed into a
+    page. A trigger line at 100k over a run started at 150k is not a cosmetic
+    error -- it is a graph that says "converging" about a run that wasn't.
+
+    Read at call time, never cached: the tests rebind these constants, and a
+    note computed at import would describe a proxy that never ran.
+    """
+    from compressor import MIN_KEEP_RATIO
+    return (f"mode=ferry, trigger={TRIGGER_TOKENS}, target={TARGET_TOKENS}, "
+            f"min_keep={MIN_KEEP_RATIO}, "
+            f"landing_timeout={LANDING_TIMEOUT}, "
+            f"min_interval={MIN_CYCLE_INTERVAL}, "
+            f"max_cycles={MAX_CYCLES_PER_WINDOW}, "
+            f"cycle_window={CYCLE_WINDOW_SECONDS}, "
+            f"thrash_tolerance={THRASH_TOLERANCE}, "
+            f"thrash_strikes={THRASH_STRIKES}, "
+            f"port={LISTEN_PORT}")
+
 _convergence = {
     "awaiting": False,     # a curation is in flight; watch where it lands
     "strikes": 0,          # consecutive landings that missed target
@@ -1354,6 +1399,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     f"[FERRY] {total_input:,} over trigger but curation is "
                     f"DISABLED (not converging; raise ROLLING_CONTEXT_TARGET "
                     f"above the floor and restart)")
+                _floor = _convergence.get("floor_at_lockout")
+                _note_gate("locked_out: not converging"
+                           + (f" (floor ~{_floor})" if _floor else ""),
+                           total_input, model=model, window=_window)
             elif total_input > 0 and total_input > TRIGGER_TOKENS and len(current_messages) >= 6:
                 already_compressing = any(
                     e["thread"] is not None and e["thread"].is_alive()
@@ -1370,11 +1419,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     # "Ferry did nothing" was invisible at INFO once already
                     # (§20) and cost a whole run.
                     log.info(f"[MSG] {total_input:,} over trigger but HOLDING — {_gate_why}")
+                    _note_gate(f"held: {_gate_why}", total_input,
+                               model=model, window=_window)
                 elif cooldown_left > 0:
                     log.info(
                         f"[MSG] Over trigger but last compression failed — "
                         f"cooling down another {cooldown_left:.0f}s"
                     )
+                    _note_gate(f"cooldown: last compression failed, "
+                               f"{cooldown_left:.0f}s left",
+                               total_input, model=model, window=_window)
                 else:
                     log.info(
                         f"[MSG] API reported {total_input:,} tokens (trigger: {TRIGGER_TOKENS:,}). "
@@ -1442,9 +1496,7 @@ def main():
     log.info(f"  Matching: content-based (no sessions/fingerprints)")
     if _metrics:
         log.info(f"  Ferry metrics: {_metrics.path}")
-        _metrics.row("proxy_start", window=_window,
-                     note=f"mode=ferry, trigger={TRIGGER_TOKENS}, "
-                          f"target={TARGET_TOKENS}, port={LISTEN_PORT}")
+        _metrics.row("proxy_start", window=_window, note=_params_note())
     elif _ferry_curation:
         # Ferry mode without a metrics file is a fact worth one loud line in
         # the banner, next to everything else this proxy will and won't do.

@@ -44,6 +44,7 @@ html { -webkit-text-size-adjust: 100%; background: var(--plane); }
   --wash:           rgba(11,11,11,0.04);
   --s-ctx:          #2a78d6;   /* categorical slot 1 — context / tokens added */
   --s-evict:        #e87ba4;   /* categorical slot 3 — curation / tokens leaving */
+  --s-hold:         #b58900;   /* categorical slot 4 — held: over trigger, declined */
   --s-arch:         #008300;   /* categorical slot 2 — archive on disk */
   --track:          #cde2fb;   /* meter track: lighter step of the same blue ramp */
   --good:           #0ca30c;
@@ -65,6 +66,7 @@ html { -webkit-text-size-adjust: 100%; background: var(--plane); }
     --wash:           rgba(255,255,255,0.06);
     --s-ctx:          #3987e5;
     --s-evict:        #d55181;
+    --s-hold:         #d0a215;
     --s-arch:         #008300;
     --track:          #184f95;
     --shadow:         none;
@@ -85,6 +87,7 @@ html { -webkit-text-size-adjust: 100%; background: var(--plane); }
   --wash:           rgba(255,255,255,0.06);
   --s-ctx:          #3987e5;
   --s-evict:        #d55181;
+  --s-hold:         #d0a215;
   --s-arch:         #008300;
   --track:          #184f95;
   --shadow:         none;
@@ -180,6 +183,13 @@ button.ghost:focus-visible { outline: 2px solid var(--s-ctx); outline-offset: 2p
   background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px;
   padding: 10px 10px 6px; box-shadow: var(--shadow); position: relative;
 }
+.params { display: flex; flex-wrap: wrap; gap: 4px 10px; padding: 0 2px 8px; }
+.params .p { display: inline-flex; align-items: baseline; gap: 5px; font-size: 11px;
+             padding: 2px 7px; border: 1px solid var(--border); border-radius: 999px;
+             background: var(--wash); }
+.params .p b { font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+.params .p span { color: var(--text-secondary); }
+.params .none { font-size: 11px; color: var(--text-muted); }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 0 2px 6px; }
 .legend .key { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-secondary); }
 .legend .swatch { width: 14px; height: 2px; border-radius: 1px; flex: none; }
@@ -255,6 +265,7 @@ tbody tr:last-child td { border-bottom: 0; }
     </div>
     <div class="tile"><div class="label">% of window</div><div class="value" id="t-pct">—</div><div class="foot" id="t-win"></div></div>
     <div class="tile"><div class="label">Curation cycles</div><div class="value" id="t-cyc">—</div><div class="foot" id="t-cycfoot"></div></div>
+    <div class="tile"><div class="label">Held (not curated)</div><div class="value" id="t-held">—</div><div class="foot" id="t-heldfoot"></div></div>
     <div class="tile"><div class="label">Total evicted</div><div class="value" id="t-evict">—</div><div class="foot" id="t-evictfoot"></div></div>
     <div class="tile"><div class="label">Archive on disk</div><div class="value" id="t-arch">—</div><div class="foot" id="t-archfoot"></div></div>
     <div class="tile"><div class="label">Last event</div><div class="value" id="t-age">—</div><div class="foot" id="t-agefoot"></div></div>
@@ -265,8 +276,10 @@ tbody tr:last-child td { border-bottom: 0; }
       <span class="key"><span class="swatch" style="background:var(--s-ctx)"></span>context tokens · tokens added</span>
       <span class="key"><span class="swatch" style="background:var(--s-evict)"></span>curation · tokens evicted</span>
       <span class="key"><span class="swatch" style="background:var(--s-arch)"></span>archive bytes on disk</span>
-      <span class="key"><span class="swatch dash"></span>trigger / target</span>
+      <span class="key"><span class="swatch rect" style="background:var(--s-hold)"></span>held — over trigger, declined</span>
+      <span class="key"><span class="swatch dash"></span>trigger (high) / target (low)</span>
     </div>
+    <div class="params" id="params" hidden></div>
     <div class="plotwrap" id="plotwrap">
       <svg id="svg" role="img" aria-label="Ferry context fill, tokens in, tokens evicted and archive growth over time"></svg>
       <div class="tip" id="tip" role="tooltip" aria-hidden="true"></div>
@@ -448,7 +461,8 @@ var FM = (function () {
     var m = {
       rows: rows, xmode: "index",
       requests: [], curations: [], archives: [], fetches: [], errors: [], starts: [], restarts: [],
-      trigger: null, target: null, mode: "",
+      gates: [],
+      trigger: null, target: null, mode: "", params: null,
       stats: {
         ctx: null, window: null, pct: null, cycles: 0, evicted: null,
         abytes: null, alines: null, carry: null, model: "", lastT: null, errCount: 0, lastErr: ""
@@ -476,6 +490,10 @@ var FM = (function () {
       else if (r.event === "error") m.errors.push(r);
       else if (r.event === "proxy_start") m.starts.push(r);
       else if (r.event === "restart") m.restarts.push(r);
+      // A curation Ferry WANTED and DECLINED. Hysteresis works by not
+      // working, so without these the graph cannot tell a correct hold from
+      // a trigger that never fired -- both are simply fewer curation marks.
+      else if (r.event === "gate") m.gates.push(r);
     });
 
     // proxy_start note carries "mode/trigger/target" in a free-form string.
@@ -487,6 +505,17 @@ var FM = (function () {
       if (mt) m.trigger = Number(mt[1]);
       if (tg) m.target = Number(tg[1]);
       if (md) m.mode = md[1];
+      // The whole knob set, as the proxy that ran actually had it. Parsed
+      // generically so a parameter added later shows up without touching
+      // this page. Unreadable note -> no panel, never a guessed default:
+      // a watermark drawn from a default over a run started elsewhere is
+      // not a cosmetic error, it is a graph that lies about convergence.
+      var kv = {}, any = false;
+      String(r.note || "").split(",").forEach(function (part) {
+        var mm = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+?)\s*$/.exec(part);
+        if (mm) { kv[mm[1]] = mm[2]; any = true; }
+      });
+      if (any) m.params = kv;
     });
 
     var s = m.stats;
@@ -776,8 +805,8 @@ var FM = (function () {
   /* ---------- header strip */
   function fillTiles(m) {
     if (!m) {
-      ["t-ctx","t-pct","t-cyc","t-evict","t-arch","t-age"].forEach(function (id) { $(id).textContent = "—"; });
-      ["t-win","t-cycfoot","t-evictfoot","t-archfoot","t-agefoot"].forEach(function (id) { $(id).textContent = ""; });
+      ["t-ctx","t-pct","t-cyc","t-held","t-evict","t-arch","t-age"].forEach(function (id) { $(id).textContent = "—"; });
+      ["t-win","t-cycfoot","t-heldfoot","t-evictfoot","t-archfoot","t-agefoot"].forEach(function (id) { $(id).textContent = ""; });
       $("t-state").textContent = "";
       $("t-meter").className = "meter";
       $("t-meter").firstChild.style.width = "0%";
@@ -816,6 +845,46 @@ var FM = (function () {
       ? "last: " + (m.xmode === "time" ? FM.fmtClock(m.curations[m.curations.length - 1].t) : "event #" + m.curations[m.curations.length - 1].i)
       : "no curation yet";
 
+    // THE PARAMETER PANEL. These are the knobs the PROXY reported at start,
+    // never defaults assumed by this page. If proxy_start could not be read
+    // the panel says so rather than showing plausible numbers -- a graph
+    // captioned with parameters it guessed is the same class of instrument
+    // that has burned us all week.
+    (function () {
+      var box = $("params");
+      if (!box) return;
+      box.innerHTML = "";
+      var order = ["mode", "trigger", "target", "min_keep", "landing_timeout",
+                   "min_interval", "max_cycles", "cycle_window",
+                   "thrash_tolerance", "thrash_strikes", "port"];
+      var pr = m.params;
+      if (!pr) {
+        box.hidden = false;
+        var n = document.createElement("div");
+        n.className = "none";
+        n.textContent = m.rows.length
+          ? "no proxy_start row in this log — parameters unknown, guide lines omitted"
+          : "";
+        box.appendChild(n);
+        return;
+      }
+      var keys = order.filter(function (k) { return k in pr; })
+        .concat(Object.keys(pr).filter(function (k) { return order.indexOf(k) < 0; }));
+      keys.forEach(function (k) {
+        var el = document.createElement("span");
+        el.className = "p";
+        var lab = document.createElement("span"); lab.textContent = k;
+        var val = document.createElement("b"); val.textContent = pr[k];
+        el.appendChild(lab); el.appendChild(val);
+        box.appendChild(el);
+      });
+      box.hidden = false;
+    })();
+
+    $("t-held").textContent = FM.fmtInt(m.gates.length);
+    $("t-heldfoot").textContent = m.gates.length
+      ? String(m.gates[m.gates.length - 1].note || "").slice(0, 72)
+      : "no curation has been declined";
     $("t-evict").textContent = s.evicted === null ? "—" : FM.fmtInt(s.evicted);
     $("t-evictfoot").textContent = s.evicted === null
       ? (m.curations.length ? "curations logged, no counts" : "tokens moved to disk")
@@ -1042,6 +1111,19 @@ var FM = (function () {
       var s = pair[0] + " " + FM.fmtCompact(v);
       txt(g, PL + plotW, Y(v) - 4, s, null, "end", fs, 600, "var(--text-muted)");
       occupied.push({ a: PL + plotW - approxW(s, fs), b: PL + plotW, y: Y(v) - 4 });
+    });
+
+    // HELD CURATIONS. Each is one moment Ferry was over trigger and chose
+    // not to act. Drawn as a short tick at the context it saw, so a cluster
+    // of holds against a falling curve reads as hysteresis working, and a
+    // cluster against a flat-and-high curve reads as a trigger that cannot
+    // fire. Those two are the same absence without this mark.
+    (model.gates || []).forEach(function (r) {
+      if (r.ctx === null || r.ctx === undefined || r.ctx > hi) return;
+      var gx = X(r.x), gy = Y(r.ctx);
+      mk("line", { x1: gx, x2: gx, y1: gy - 5, y2: gy + 5,
+                   stroke: "var(--s-hold)", "stroke-width": 1.5,
+                   "stroke-linecap": "round", opacity: 0.85 }, g);
     });
 
     if (!pts.length) {
