@@ -28,6 +28,10 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "proxy"))
 os.environ.setdefault("ROLLING_CONTEXT_HOME", "/tmp/.hyst-test-home")
+# Keep the suite OUT of the production debug log. Importing server.py
+# installs a FileHandler; without this every test run appended THRASH
+# WARNINGS to the log a real incident would be diagnosed from.
+os.environ.setdefault("ROLLING_CONTEXT_LOG", "/tmp/.ferry-test-debug.log")
 spec = importlib.util.spec_from_file_location("ferry_server", HERE.parent / "proxy" / "server.py")
 srv = importlib.util.module_from_spec(spec); sys.modules["ferry_server"] = srv
 spec.loader.exec_module(srv)

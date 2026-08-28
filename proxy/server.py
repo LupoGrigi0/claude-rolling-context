@@ -40,7 +40,44 @@ class FlushFileHandler(logging.FileHandler):
         super().emit(record)
         self.flush()
 
-_log_path = os.path.join(os.path.expanduser("~"), ".claude", "rolling-context-debug.log")
+def _log_filename():
+    """One debug log PER PROXY, not one shared by all of them.
+
+    2026-08-28: three fairy proxies all ran as the same Unix user and all
+    appended to ~/.claude/rolling-context-debug.log. When a curation landed
+    badly and took a thrash strike, the diagnostic lines that would have
+    explained it -- "Injecting: 559,202 -> 139,179 chars (282 -> 59
+    messages)" -- were interleaved from three different minds with nothing
+    to say which was which. The measurement existed and was unusable.
+
+    Worse: the unit suite imports this module, so `python3 tests/...` wrote
+    six THRASH WARNINGS into the production log. Grepping for a real strike
+    returned test output first, timestamped and indistinguishable.
+
+    Named by FERRY_DATA's basename when set (that is already per-instance and
+    is what the metrics file is keyed on, so log and metrics join by eye),
+    else by listen port, else the old shared name so a plain single-proxy
+    setup is unchanged. ROLLING_CONTEXT_LOG overrides everything -- the test
+    suite points it at /tmp and stops polluting anything.
+    """
+    override = os.environ.get("ROLLING_CONTEXT_LOG")
+    if override:
+        return override
+    tag = ""
+    fd = os.environ.get("FERRY_DATA")
+    if fd:
+        tag = os.path.basename(os.path.normpath(fd))
+    else:
+        # endpoints.LISTEN_PORT, not the module-level LISTEN_PORT: that is
+        # bound a dozen lines BELOW this call site, so naming it here is a
+        # NameError at import. Caught before it shipped, but only because the
+        # syntax check runs the module rather than just parsing it.
+        tag = str(getattr(endpoints, "LISTEN_PORT", "") or "")
+    return os.path.join(os.path.expanduser("~"), ".claude",
+                        f"rolling-context-debug{'-' + tag if tag else ''}.log")
+
+
+_log_path = _log_filename()
 # encoding is explicit: without it Windows falls back to cp1252 and the em
 # dashes in these log messages land as mojibake.
 _log_handler = FlushFileHandler(_log_path, mode="a", encoding="utf-8")

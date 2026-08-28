@@ -15,6 +15,13 @@ sys.path.insert(0, os.path.join(HERE, "..", "proxy"))
 import server  # noqa: E402
 import switch  # noqa: E402
 
+import os as _os_log_guard
+# Keep the suite OUT of the production debug log: importing server.py
+# installs a FileHandler on ~/.claude/rolling-context-debug.log, so every
+# test run appended THRASH WARNINGS to the file a real incident is
+# diagnosed from. Six of them were sitting above a genuine strike.
+_os_log_guard.environ.setdefault("ROLLING_CONTEXT_LOG", "/tmp/.ferry-test-debug.log")
+
 OFF = switch.MARKER_OFF
 ON = switch.MARKER_ON
 

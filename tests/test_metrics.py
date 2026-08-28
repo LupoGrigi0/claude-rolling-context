@@ -25,6 +25,14 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "proxy"))
 
+# Keep the suite OUT of the production debug log: importing server.py installs
+# a FileHandler on ~/.claude/rolling-context-debug.log, so every test run
+# appended THRASH WARNINGS to the file a real incident is diagnosed from. Six
+# of them were sitting above a genuine strike on 2026-08-28.
+# Set BEFORE the proxy modules are imported -- the handler is installed at
+# import time, so doing this afterwards would be far too late.
+os.environ.setdefault("ROLLING_CONTEXT_LOG", "/tmp/.ferry-test-debug.log")
+
 import metrics  # noqa: E402
 from metrics import (EVENTS, HEADER, HEADER_LINE, ArchiveTotals,  # noqa: E402
                      MetricsWriter, get_writer, metrics_enabled)

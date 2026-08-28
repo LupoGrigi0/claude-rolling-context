@@ -21,6 +21,10 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 os.environ.setdefault("ROLLING_CONTEXT_HOME", "/tmp/.thrash-test-home")
+# Keep the suite OUT of the production debug log. Importing server.py
+# installs a FileHandler; without this every test run appended THRASH
+# WARNINGS to the log a real incident would be diagnosed from.
+os.environ.setdefault("ROLLING_CONTEXT_LOG", "/tmp/.ferry-test-debug.log")
 
 # server.py imports its siblings by bare name (`import endpoints`), so the
 # proxy dir has to be on the path before it is executed.

@@ -24,6 +24,13 @@ import tempfile
 import time
 import urllib.request
 
+import os as _os_log_guard
+# Keep the suite OUT of the production debug log: importing server.py
+# installs a FileHandler on ~/.claude/rolling-context-debug.log, so every
+# test run appended THRASH WARNINGS to the file a real incident is
+# diagnosed from. Six of them were sitting above a genuine strike.
+_os_log_guard.environ.setdefault("ROLLING_CONTEXT_LOG", "/tmp/.ferry-test-debug.log")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROXY = os.path.join(HERE, "..", "proxy")
 MOCK = os.path.join(HERE, "mock_endpoint.py")
