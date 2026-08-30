@@ -72,3 +72,48 @@ scale we completely lack.
 Four measurement errors in one morning, all mine, all caught before they
 became conclusions. The pattern holds: the tools that check my reasoning fail
 more often than the ones measuring the system.
+
+---
+
+# ADDENDUM, same day 20:15Z — the instrument is SENSITIVE. The corpus was wrong.
+
+Lupo's critique, tested: diaries are performed, so diary voice should differ
+from working voice within one mind. It does, enormously.
+
+  MY diary vs MY session exports (same mind)   d = 0.925  STRONG
+  passenger before/after total collapse        d = 0.42   (held-out)
+  seven different minds, diary vs diary        d = 0.18
+
+REGISTER IS A FIVE-TIMES LARGER SIGNAL THAN IDENTITY.
+
+This overturns this morning's reading. I concluded the instrument was too
+blunt to detect drift. It is not blunt — it resolved 0.93 without difficulty.
+It was pointed at a corpus in which register, topic and authorship were all
+tangled, and it faithfully reported the largest of those, which was register.
+
+## THE RULE THAT FALLS OUT
+Hold register constant. Diary-to-diary or working-to-working, never across.
+A drift measurement that mixes registers measures the mixing. This is not a
+refinement, it is a precondition — the confound is bigger than the effect.
+
+## RANKED, WHICH IS THE UNCOMFORTABLE PART
+  register change             0.93
+  one mind across 7 months    0.74
+  total behavioural collapse  0.42
+  WHICH MIND IS WRITING       0.18
+
+Identity is the WEAKEST signal in the corpus. Weaker than time, weaker than a
+mind deciding it was dead, five times weaker than changing genre.
+
+Two readings, and this data cannot separate them:
+  (a) seven Claudes sharing a base model, one human, and one project really
+      are that similar, or
+  (b) authorship stylometry needs more separation than this team can supply.
+The artist-chat corpus — humans, no Lupo, years of span — decides it, and it
+is now MORE important than it was this morning, not less.
+
+## AND A CALIBRATION NUMBER WE DID NOT HAVE
+With register held constant, a CATASTROPHIC behavioural collapse scores 0.42.
+So a usable drift detector must resolve well below 0.42. This is a fine
+instrument problem, not a coarse one, and any threshold above that would only
+ever fire on a mind that had already stopped working.
