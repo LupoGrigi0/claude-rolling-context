@@ -244,6 +244,17 @@ THRASH_STRIKES = int(os.environ.get("ROLLING_CONTEXT_THRASH_STRIKES") or "3")
 # `real_token_count - chars/4`, an estimate that ran high and produced
 # "TARGET UNREACHABLE: ...~104,780..." on a proxy that then landed at 97,486.
 # One integer, and it makes that contradiction impossible.
+# OFF BY DEFAULT. The bound is sound arithmetic (floor <= smallest observed
+# context) fed by an unsound observation set. Until the interleaved-request
+# problem is solved AND tested under live agentic load, the old behaviour --
+# an over-high estimate that produces a WARNING -- is strictly safer than a
+# too-low bound that SILENTLY STOPS EVICTION. A wrong number a human can see
+# beats a correct-looking number that disables the system.
+#
+# Set ROLLING_CONTEXT_OBSERVED_FLOOR=1 to re-enable, deliberately, under
+# supervision.
+OBSERVED_FLOOR_ON = (os.environ.get("ROLLING_CONTEXT_OBSERVED_FLOOR") or "0") == "1"
+
 _observed = {"floor": None}
 
 
@@ -1392,7 +1403,25 @@ class ProxyHandler(BaseHTTPRequestHandler):
             # is exactly what produced the bad floor in the first place; feeding
             # estimates back into the bound would launder the same error into
             # something that looks measured.
-            if not estimated:
+            #
+            # DISABLED BY DEFAULT AS OF 2026-08-29T23:45Z. See OBSERVED_FLOOR_ON.
+            #
+            # THIS GUARD IS NOT SUFFICIENT AND IT COST A RUN. `estimated` is
+            # false for subagent and harness side-queries too -- Claude Code
+            # gives a subagent its PARENT'S session id and fires small internal
+            # queries on it, so the proxy sees REAL token counts of 9,929 /
+            # 11,447 / 10,630 interleaved among 150,000-token turns. Those are
+            # different conversations with different scaffolding; their totals
+            # say NOTHING about this conversation's floor. Feeding them here
+            # drove the observed floor to ~10,055, so
+            #   allowed = 100,000 - 10,055 = 89,945 against ~45,000 of messages
+            # pinned keep_ratio at 100.0% -- EVICT NOTHING -- and three cycles
+            # moved zero tokens before the thrash detector locked the proxy out.
+            #
+            # The phantom sawtooth, third appearance, in a component I wrote
+            # while looking straight at the code that marks these rows
+            # "interleaved". metrics.py already detects them. This did not.
+            if OBSERVED_FLOOR_ON and not estimated:
                 _note_observed_floor(total_input)
 
             if _metrics:

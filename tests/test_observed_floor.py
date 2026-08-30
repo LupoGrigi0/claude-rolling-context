@@ -66,7 +66,25 @@ def check(name, got, want):
         FAILED.append(f"{name}: expected {want!r}, got {got!r}")
 
 
+# ---- 0. THE BOUND IS OFF BY DEFAULT, AND THAT IS THE POINT ----------------
+# 2026-08-29: enabling this by default cost a live run. `estimated` is false
+# for subagent and harness side-queries as well as real turns -- Claude Code
+# gives a subagent its PARENT'S session id -- so the proxy saw genuine token
+# counts of 9,929 / 11,447 / 10,630 among 150,000-token turns. The floor
+# collapsed to ~10,055, keep_ratio pinned at 100% (EVICT NOTHING), and three
+# cycles moved zero tokens before the thrash detector locked the proxy out.
+#
+# The arithmetic is still right. The observation set is not. Off until the
+# interleaved problem is solved AND validated under live agentic load.
+
+check("observed-floor bound is OFF unless explicitly enabled",
+      srv.OBSERVED_FLOOR_ON, False)
+check("the enable switch is an env var, not a code edit",
+      "ROLLING_CONTEXT_OBSERVED_FLOOR" in open(
+          HERE.parent / "proxy" / "server.py").read(), True)
+
 # ---- 1. The server tracks the smallest real context it has seen ------------
+# The tracker itself stays correct and tested; only its FEED is untrustworthy.
 
 check("floor tracker exists", hasattr(srv, "_note_observed_floor"), True)
 

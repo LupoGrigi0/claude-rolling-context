@@ -238,14 +238,22 @@ $(echo "$arms" | sed 's/^/      /')
 fi
 
 lastspoke=$(grep '^__spoke ' "$STATE" 2>/dev/null | awk '{print $2}')
-lastspoke=${lastspoke:-0}
-mins_since=$(( (NOW - lastspoke) / 60 ))
+# A MISSING __spoke IS "NEVER SPOKE", NOT "SPOKE IN 1970". Defaulting to 0
+# printed "nothing worth waking you for in 29801665m", which is harmless only
+# because it is absurd. Blank is not zero here either: treat an absent record
+# as "due now" rather than as an epoch timestamp.
+if [ -z "$lastspoke" ]; then
+  mins_since=$HEARTBEAT_MIN
+else
+  mins_since=$(( (NOW - lastspoke) / 60 ))
+  [ "$mins_since" -lt 0 ] && mins_since=0
+fi
 
 if [ -z "$say" ] && [ "$mins_since" -ge "$HEARTBEAT_MIN" ]; then
   say="
   (heartbeat — nothing WORTH WAKING YOU FOR in ${mins_since}m; watcher alive)
-  Routine curations are counted below, not announced. "Nothing happened" would
-  be false: 8 curations ran during one such quiet window on 2026-08-28.
+  Routine curations are counted below, not announced. A claim that nothing
+  happened would be false: 8 curations ran in one such quiet window.
 $(for n in passenger ferry fairie; do
     printf '  %-10s ctx=%s curations=%s\n' "$n" \
       "$(awk -F, '$2=="request"{c=$4} END{print c+0}' "$TB/ferry-data/$n/metrics.csv")" \
