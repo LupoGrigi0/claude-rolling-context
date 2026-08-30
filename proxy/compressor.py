@@ -174,6 +174,45 @@ Write the chronological summary:"""
 
 
 
+
+def scaffolding_chars(payload):
+    """Characters in the parts of a request Ferry CANNOT evict.
+
+    system prompt + tool definitions. This is the FLOOR, and until now it has
+    only ever been ESTIMATED -- by subtracting a chars/4 guess about messages
+    from the real token count, which runs high because markdown tokenises
+    nearer 3.2 chars/token, and which told an operator on 2026-08-29 to raise
+    a target above a number the same proxy then landed below.
+
+    The payload has been sitting right here the whole time. `_count_breakpoints`
+    has read `payload["system"]` and `payload["tools"]` since the day it was
+    written; nobody thought to measure their size.
+
+    Returns (system_chars, tools_chars, n_tools). Never raises: this feeds a
+    diagnostic, and a diagnostic that can break the request path is not a
+    diagnostic.
+    """
+    sys_chars = tool_chars = n_tools = 0
+    try:
+        system = payload.get("system") if payload else None
+        if isinstance(system, str):
+            sys_chars = len(system)
+        elif isinstance(system, list):
+            for b in system:
+                if isinstance(b, dict):
+                    sys_chars += len(str(b.get("text", "")))
+                else:
+                    sys_chars += len(str(b))
+        for t in (payload.get("tools") if payload else None) or []:
+            n_tools += 1
+            # A tool definition is name + description + JSON schema, and the
+            # schema is usually the bulk of it.
+            tool_chars += len(json.dumps(t, ensure_ascii=False)) if isinstance(t, dict) else len(str(t))
+    except Exception:
+        pass
+    return sys_chars, tool_chars, n_tools
+
+
 def effective_unevictable(real_token_count, msg_chars, observed_floor=None):
     """How many tokens of this request Ferry CANNOT evict.
 
@@ -708,6 +747,34 @@ class RollingCompressor:
             msg_tokens = max(1, msg_chars // 4)          # estimate, marked as one
             unevictable = effective_unevictable(real_token_count, msg_chars,
                                                 observed_floor)
+
+            # MEASURED FLOOR, reported alongside the estimate so the two can be
+            # compared on live traffic instead of argued about.
+            #
+            # The estimate is `real_tokens - msg_chars/4`, and it inherits the
+            # chars/4 error WITH ITS SIGN FLIPPED because it is a subtrahend.
+            # This is a PROPORTION instead: scaffolding's share of the request's
+            # characters, applied to the request's real token count. It does not
+            # assume chars-per-token is 4 -- it only assumes the ratio is roughly
+            # uniform across system, tools and messages, which is a far weaker
+            # assumption and one that does not drift with content type.
+            #
+            # Logged, never acted on yet. It has to be watched on live traffic
+            # before anything depends on it: the last floor number I trusted
+            # without that pinned keep_ratio at 100% and stopped a mind
+            # evicting anything at all.
+            try:
+                _sc, _tc, _nt = scaffolding_chars(payload)
+                _total = _sc + _tc + msg_chars
+                if _total > 0 and real_token_count:
+                    _measured = int(real_token_count * (_sc + _tc) / _total)
+                    log.info(
+                        f"[FLOOR] measured scaffolding {_measured:,} tok "
+                        f"(system {_sc:,} ch + {_nt} tools {_tc:,} ch of "
+                        f"{_total:,} total) vs ESTIMATED {unevictable:,} tok "
+                        f"-- difference {unevictable - _measured:+,}")
+            except Exception as _e:
+                log.debug(f"[FLOOR] unavailable: {_e}")
             allowed = self.target_tokens - unevictable
             if allowed <= 0:
                 # The target is BELOW the unevictable floor: no amount of
