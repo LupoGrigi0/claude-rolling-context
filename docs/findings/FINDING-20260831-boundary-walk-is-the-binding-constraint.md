@@ -54,3 +54,40 @@ FIFTY THOUSAND TOKENS TOO HIGH. Every landing between 125k and 175k went
 unreported; this cycle was caught only by the separate <2000 eviction test.
 Now read from the proxy_start row, which is the rule I wrote into Zara's UI
 spec the same day and was violating in my own tool.
+
+---
+
+# ADDENDUM 05:20Z — THE RATE, and my third small-sample error in two days
+
+Measured over 97 landings since 2026-08-30, both reachable instances:
+
+                     ferry (54)      passenger (43)
+  over ceiling        6  (11%)         2  (5%)
+  evicted <20k tok    5  ( 9%)         1  (2%)
+
+  when it WORKS   : evicts 51,844 -> lands 104,983   (5% over a 100,000 target)
+  when BLOCKED    : evicts 17,571 -> lands 133,330
+
+## SO THE HONEST CHARACTERISATION IS NEITHER OF MINE
+Ferry works ~90% of the time and works WELL. The boundary blocks it in 5-11%
+of cycles, and it SELF-CORRECTS: the next cycle succeeds and the strike count
+resets ("convergence restored" twice in two hours). It costs a wasted cycle
+and one round of elevated context. Not an emergency.
+
+## THREE SMALL-SAMPLE ERRORS IN TWO DAYS, ALL MINE, ALTERNATING SIGN
+  08-29  called the boundary walk "the successor problem"      (correct)
+  08-30  ONE favourable observation -> downgraded to
+         "burst-condition only"                                (too optimistic)
+  08-31  FIVE mixed observations -> about to report "~40% of
+         cycles"                                               (too pessimistic)
+  08-31  NINETY-SEVEN observations -> 5-11%, self-correcting   (a rate)
+
+The pattern is not that I am wrong in a direction. It is that I keep treating
+a handful of observations AS a rate, and a handful is never a rate. Both
+wrong readings felt like findings at the time and both had a tidy story
+attached.
+
+The fix is procedural, not analytical: BEFORE characterising a behaviour,
+count how many observations the characterisation rests on and say the number
+out loud. "Two of five" and "six of fifty-four" are different sentences and
+only one of them is evidence.
