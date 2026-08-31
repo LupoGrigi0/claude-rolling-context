@@ -109,10 +109,32 @@ for n in passenger ferry fairie; do
     land=$(awk -F, -v t="$(grep ',curation,' "$M" | tail -1 | cut -d, -f1)" \
              '$2=="request" && $1>t {print $4; exit}' "$M")
     ev=$(grep ',curation,' "$M" | tail -1 | cut -d, -f6)
-    ceil=$(( ${FERRY_TARGET:-140000} * 5 / 4 ))
-    if { [ -n "$land" ] && [ "$land" -gt "$ceil" ]; } || [ "${ev:-0}" -lt 2000 ]; then
+    # READ THE TARGET THE PROXY ACTUALLY REPORTED. Do not guess it.
+    #
+    # This used to be ${FERRY_TARGET:-140000}, and FERRY_TARGET is not set in
+    # cron's environment, so it silently used 140,000 -- a stale value from
+    # the old workaround era. The real target has been 100,000 since
+    # 2026-08-29, making the true ceiling 125,000 and this one 175,000.
+    # FIFTY THOUSAND TOKENS TOO HIGH: every landing between 125k and 175k
+    # went unreported, which is exactly the alarm this line exists to raise.
+    # It caught cycle 145 only because of the separate <2000 eviction test.
+    #
+    # This is the rule I wrote into Zara's UI spec the same day -- draw the
+    # guide lines from what the proxy REPORTED, never from a default -- and
+    # my own watcher was violating it the whole time.
+    _tgt=$(grep ',proxy_start,' "$M" 2>/dev/null | tail -1 \
+           | grep -oE 'target=[0-9]+' | head -1 | cut -d= -f2)
+    _tol=$(grep ',proxy_start,' "$M" 2>/dev/null | tail -1 \
+           | grep -oE 'thrash_tolerance=[0-9.]+' | head -1 | cut -d= -f2)
+    if [ -n "$_tgt" ]; then
+      ceil=$(python3 -c "print(int($_tgt * ${_tol:-1.25}))" 2>/dev/null || echo $(( _tgt * 5 / 4 )))
+    else
+      # No proxy_start row: say so rather than inventing a number.
+      ceil=""
+    fi
+    if { [ -n "$land" ] && [ -n "$ceil" ] && [ "$land" -gt "$ceil" ]; } || [ "${ev:-0}" -lt 2000 ]; then
       say="$say
-  $n: CURATION #$cur — ${ev:-?} tok evicted, landed ${land:-pending} (ceiling $ceil)$([ "${ev:-0}" -lt 2000 ] && echo '  <- moved almost nothing')"
+  $n: CURATION #$cur — ${ev:-?} tok evicted, landed ${land:-pending} (ceiling ${ceil:-UNKNOWN - no proxy_start row})$([ "${ev:-0}" -lt 2000 ] && echo '  <- moved almost nothing')"
     fi
   fi
   [ "$err" -gt "$perr" ] && say="$say
