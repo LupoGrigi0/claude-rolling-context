@@ -18,7 +18,12 @@ set -uo pipefail
 TB=/mnt/lupoportfolio/ferry-testbed
 STATE="$HOME/.ferry-watch.state"
 PORT=21000
-STALL_MIN=25          # a fairy silent this long is worth mentioning
+STALL_MIN=50          # must exceed the SLOWEST load cadence, or every normal
+                      # gap is an alarm. Set to 25 when feed ran */8; I moved
+                      # feed and poke to */30 on 2026-09-01 and this tripped
+                      # within twenty minutes. A threshold is a claim about
+                      # what NORMAL looks like, and I changed normal without
+                      # changing the claim.          # a fairy silent this long is worth mentioning
 HEARTBEAT_MIN=120     # say something at least this often, even if quiet
 NOW=$(date -u +%s)
 
