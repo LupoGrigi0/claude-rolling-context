@@ -711,12 +711,36 @@ class CompressionStore:
                         found = True
                         break
                 if not found and chain_len <= len(msg_hashes):
-                    # Count total mismatches
+                    # DEBUG, NOT WARNING -- and the level is the whole point.
+                    #
+                    # This loop scans EVERY stored compression and keeps the one
+                    # reaching furthest into the request. At most one can match;
+                    # the rest are older compressions whose hash chains were
+                    # themselves already replaced by pointers, so they CANNOT
+                    # appear. "No match" is the expected result for every
+                    # non-current entry -- ~82 per request on ferry.
+                    #
+                    # At WARNING that produced 425,141 lines in ferry's log by
+                    # 2026-09-02, against 108 real warnings. Among the 108:
+                    # "*** NOT CONVERGING -- CURATION DISABLED ***", the loudest
+                    # event Ferry can emit, sitting at one part in 3,937. I had
+                    # written into the UI spec that lockout must be impossible to
+                    # miss, and shipped a log where it was impossible to find.
+                    #
+                    # Nothing here was ever broken. A 0%-success subsystem and a
+                    # normal negative logged too loudly look identical from
+                    # outside, and I started writing up the first before reading
+                    # the code. Kept at DEBUG so a genuine matching failure is
+                    # still diagnosable by turning the level down.
+                    #
+                    # THE RULE: an expected per-item negative is DEBUG. WARNING
+                    # is for what a human must act on. A monitor you learn to
+                    # skim is already broken, correct output or not.
                     mismatches = []
                     for i in range(min(chain_len, len(msg_hashes))):
                         if oh[i] != msg_hashes[i]:
                             mismatches.append(i)
-                    log.warning(
+                    log.debug(
                         f"[MATCH] No match: chain={chain_len} req={len(msg_hashes)} "
                         f"mismatches={len(mismatches)} at positions: "
                         f"{mismatches[:10]}{'...' if len(mismatches) > 10 else ''}"
@@ -729,7 +753,11 @@ class CompressionStore:
                         if stored_msg and incoming_msg:
                             s_content = str(stored_msg.get("content", ""))[:500]
                             i_content = str(incoming_msg.get("content", ""))[:500]
-                            log.warning(
+                            # Same reasoning as above, and worse: this one
+                            # attaches up to 1,000 chars of conversation to each
+                            # expected negative. 197 MB of debug logs on a volume
+                            # at 84%.
+                            log.debug(
                                 f"[MATCH] Mismatch at [{idx}] role={stored_msg.get('role')}:\n"
                                 f"  STORED:   {s_content}\n"
                                 f"  INCOMING: {i_content}"
