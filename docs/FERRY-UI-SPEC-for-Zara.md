@@ -106,15 +106,50 @@ panel must SAY so rather than showing plausible defaults.
    week." Right now the axis auto-fits the whole file and a 15-hour run
    compresses a curation into one pixel.
 
-2. **The floor, as a filled band.** New today: the unevictable scaffolding —
-   system prompt plus tool definitions — measured at **90,590 tokens on a
-   151,762-token request. 59.7%. Tool definitions alone are 82,053 (175
-   tools).** That is not conversation and Ferry can never evict it. If it were
-   drawn as a solid band at the bottom, the picture changes completely: the
-   sawtooth is riding on a floor that nearly reaches the target, and the
-   *actual working space* is the thin sliver between them. Right now the graph
-   makes it look like Ferry has a whole 200k window to play with. It has
-   about 9,000 tokens of headroom.
+2. **The floor, as a filled band — and it must be a BAND, not a line.**
+   The unevictable scaffolding (system prompt + tool definitions) is not
+   conversation and Ferry can never evict it. Drawn at the bottom it changes
+   the picture completely: the sawtooth rides on a floor, and the *actual
+   working space* is the gap between floor and target, not the whole window.
+
+   **CORRECTION 2026-09-02 — I gave you a wrong number, confidently.** The
+   first version of this section said the floor was "measured at 90,590
+   tokens." It was not measured. It is `real_tokens × (scaffolding_chars ÷
+   total_chars)` — an apportionment that assumes chars-per-token is uniform
+   across system, tools and messages. It is not uniform: on live traffic
+   scaffolding runs ~3.57 chars/token and conversation ~2.90, because tool
+   definitions are repetitive structured English while our conversation is
+   full of paths, hashes and code. The apportionment therefore OVERSTATES the
+   floor by roughly 8,400 tokens.
+
+   Regressing the real API token count on resident message characters, one
+   request at a time, over two instances:
+
+       ferry      n=5,207   floor ≈ 84,132   R² 0.955
+       passenger  n=1,995   floor ≈ 84,906   R² 0.932
+       (a third instance gave 57,872 on n=21 over a 1.9× range — discarded,
+        that is the ill-conditioning that produced an impossible answer once
+        already)
+
+   They agree within 774 tokens. But subsets of the SAME data drift from
+   83,222 to 95,140, because chars-per-token rises with message load. So the
+   honest quantity is **a range of roughly 83,000–95,000**, and the working
+   space above it is **~13,000–21,600 tokens**, not the "about 9,000" I told
+   you.
+
+   **What this means for the design, which is the useful part.** Do not draw
+   the floor as a crisp line at a number the proxy cannot actually measure.
+   Draw it as a band with its own uncertainty — a solid fill to the
+   conservative bound and a hatched or faded zone through the uncertain range.
+   A crisp line is a claim of precision we do not have, and this page's entire
+   job is to avoid exactly that. If the proxy has not emitted enough to
+   bound it, say so on the page rather than picking a plausible value.
+
+   This is the same rule as everything else in §4: draw what was reported,
+   never what was assumed. I wrote that rule and then handed you a number that
+   broke it, which is why the correction is left in the document instead of
+   quietly swapped — you should be able to see what I got wrong and decide how
+   much to trust the rest.
 
 3. **Fleet view.** Three minds side by side on one time axis. Lupo runs three
    terminals to see this.
