@@ -98,6 +98,21 @@ lost, it moved.
 Every knob the proxy reported at start. If `proxy_start` is unreadable the
 panel must SAY so rather than showing plausible defaults.
 
+**"FLOOR" MEANS TWO DIFFERENT THINGS — 68,000 tokens apart. Name them both.**
+Added 2026-09-03, Zara's finding, and the ambiguity is mine.
+  * **Scaffolding floor** — system prompt + tool definitions. Genuinely
+    unevictable, ~84,500 (range 83-95k, an apportionment not a measurement).
+    This is the band at the bottom of the graph.
+  * **Stall level** — what the runtime `gate` note calls `floor ~152597`. It is
+    NOT a floor. It is `total_input` at the moment three consecutive cycles
+    failed to reach target, and it INCLUDES conversation that was perfectly
+    evictable. Per the boundary-walk measurement, those cycles often fail
+    because there is no legal cut point in a long tool_use/tool_result run, not
+    because anything was unevictable.
+  Drawing one and labelling it the other would be confidently wrong in exactly
+  the way this document exists to prevent. The runtime message is also wrong to
+  say "floor" and that is a code fix, not a UI naming choice.
+
 ---
 
 ## 5. What I would most like that does not exist
@@ -163,8 +178,28 @@ panel must SAY so rather than showing plausible defaults.
 
 - **Single file, no build, no CDN.** It gets served off a tiny stdlib HTTP
   server on a tailscale-only port, sometimes from a machine with no npm.
-- **Stdlib-parseable CSV.** No schema changes without moving the writer in the
-  same commit.
+- **Quote-aware CSV — NOT `line.split(",")`.** AMENDED 2026-09-03 on Zara's
+  finding, and the original wording here ("stdlib-parseable") actively invited
+  the bug. 1,378 rows in ferry's file contain quoted fields, because
+  `proxy_start.note` carries the parameters as one comma-separated string:
+
+      ...,proxy_start,,,,,,,,,,"mode=ferry, trigger=150000, target=100000, ..."
+
+  Split that naively and the note yields ` port=5611"` — **trigger and target
+  are gone**, and §4 above tells you to draw your guide lines from exactly
+  those. The two rules were in direct conflict and this one was wrong.
+
+  The failure is silent: a naive parser does not error, it returns a plausible
+  short string, and the page falls back to a default. That is precisely the
+  175,000-vs-125,000 ceiling bug in §4, one layer down.
+
+  Use Python's `csv` module, or a real quote-aware scanner. The existing
+  `ferry-metrics.html` already has one (`parseCSV`, ~line 321) that handles
+  quoted commas, embedded newlines and torn trailing records — so the CODE was
+  right and this SPEC was wrong. If you start over, port that scanner or write
+  the fifteen honest lines; do not split on commas.
+
+- No schema changes without moving the writer in the same commit.
 - **Theme-aware.** Lupo reads it at 1am.
 - **Degrade honestly.** Missing data must render as missing, not as zero, not
   as absent. If you cannot draw something, say why on the page.
