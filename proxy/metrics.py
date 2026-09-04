@@ -58,7 +58,52 @@ HEADER_LINE = ",".join(HEADER)
 # It carries context_tokens and note ONLY: no cycle, no tokens_evicted --
 # blank is not zero, and a 0 in tokens_evicted means something far worse.
 EVENTS = ("proxy_start", "request", "probe", "curation", "archive_write",
-          "fetch", "restart", "error", "gate")
+          "fetch", "restart", "error", "gate", "alive")
+
+# LIVENESS PULSE. Interval in seconds; 0 or negative disables it.
+#
+# WHY THIS EXISTS. On 2026-09-04 Zara-c207, building the observation surface,
+# was designing a state matrix over activity x health -- both axes computed
+# from rows in this file. ferry's trace at that moment: 10,944 request rows
+# and ELEVEN probe rows, with the 7.6h and 3.2h silences containing NOTHING.
+#
+#   A dead proxy and an idle mind produce byte-identical output: no rows.
+#
+# So a dead Ferry would render as "at rest, fine" -- the most reassuring cell
+# on the page built to detect Ferry failing. And both silences over three
+# hours in that trace were FAILURES; every routine gap was under the load
+# cadence. Prolonged silence is not rest. It is the only signature a dead
+# writer can produce, precisely because a dead writer produces nothing.
+#
+# The pulse makes an absent row mean something. It is the heartbeat.sh
+# argument applied to the file: a claim that nothing happened is false unless
+# something is alive to make it. ferry-watch says that sentence in every quiet
+# report; the file it reads could not.
+#
+# 300s is under the ~30-minute load cadence, so a routine gap is covered
+# several times over and a genuinely dead writer is obvious within one gap.
+LIVENESS_SEC = float(os.environ.get("ROLLING_CONTEXT_LIVENESS_SEC") or 300)
+
+
+def _should_pulse(now, last_write, interval):
+    """Pure predicate, so the rule is testable without waiting on a thread.
+
+    SUPPRESSION IS THE POINT: a pulse that fires during busy traffic is noise,
+    and a monitor you learn to skim is already broken regardless of whether
+    its output is correct.
+
+    Clock skew is treated as "wrote recently" rather than allowed to produce a
+    negative elapsed time -- a guard whose failure mode is a burst of rows is
+    worse than one that stays quiet for an interval.
+    """
+    try:
+        if not interval or interval <= 0:
+            return False
+        if last_write is None:
+            return True
+        return (now - last_write) >= interval
+    except Exception:
+        return False
 
 # After this many consecutive failures we stop logging (a metrics disk that
 # went read-only would otherwise flood the proxy log line-for-line).
@@ -107,6 +152,8 @@ class MetricsWriter:
 
     def __init__(self, path):
         self.path = str(path)
+        self._last_write = None      # set by row(); None until the first write
+        self._pulse = None           # the liveness thread, if started
         self._lock = threading.RLock()
         # session id -> last context_tokens, for the request-to-request delta.
         # PER SESSION on purpose: one proxy carries a conversation and every
@@ -185,6 +232,10 @@ class MetricsWriter:
         """
         try:
             with self._lock:
+                # The pulse suppresses itself when anything else is writing.
+                # Stamped for EVERY event, including the pulse's own row, so a
+                # healthy proxy emits at most one alive row per silent interval.
+                self._last_write = time.time()
                 if event == "request":
                     self._apply_delta(fields, session)
                 values = [fields.get("ts_iso") or _now(), event] + [
@@ -276,6 +327,44 @@ class MetricsWriter:
         self._session_context.move_to_end(key)
         while len(self._session_context) > _MAX_SESSIONS:
             self._session_context.popitem(last=False)
+
+
+    def start_liveness(self, interval=None):
+        """Emit an `alive` row after each silent `interval`. Idempotent.
+
+        Returns True if a pulse thread is running for this writer.
+
+        The thread is a daemon and never raises into the proxy: a liveness
+        signal that can crash the thing it reports on is worse than none. It
+        wakes more often than the interval so that a write mid-interval
+        correctly pushes the next pulse out rather than being missed.
+        """
+        iv = LIVENESS_SEC if interval is None else float(interval)
+        if not iv or iv <= 0:
+            return False
+        if self._pulse is not None and self._pulse.is_alive():
+            return True
+
+        def _loop():
+            tick = max(0.05, min(iv / 4.0, 30.0))
+            while True:
+                try:
+                    time.sleep(tick)
+                    if _should_pulse(time.time(), self._last_write, iv):
+                        self.row("alive", note=f"liveness pulse; "
+                                              f"interval={iv:.0f}s; "
+                                              f"silence is not rest")
+                except Exception:
+                    # Never let the pulse take the proxy down with it.
+                    try:
+                        time.sleep(tick)
+                    except Exception:
+                        return
+
+        t = threading.Thread(target=_loop, name="ferry-liveness", daemon=True)
+        t.start()
+        self._pulse = t
+        return True
 
 
 class ArchiveTotals:

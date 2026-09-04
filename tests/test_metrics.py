@@ -80,7 +80,21 @@ check("the contract events are the ones the module knows",
                       # Hysteresis works by NOT curating, so without a
                       # positive trace a correct hold and a broken trigger
                       # are the same absence on the graph.
-                      "gate"}, EVENTS)
+                      "gate",
+                      # "alive": a pulse on a timer, independent of traffic.
+                      # Added 2026-09-04. ferry's trace held 10,944 request
+                      # rows and ELEVEN probe rows, with its 7.6h and 3.2h
+                      # silences containing NOTHING -- so a DEAD PROXY and an
+                      # IDLE MIND produced byte-identical output. A page
+                      # reading activity and health from these rows would
+                      # render a dead Ferry as "at rest, fine": the most
+                      # reassuring state on the surface built to detect Ferry
+                      # failing. Both silences over three hours in that trace
+                      # were failures; every routine gap was under the load
+                      # cadence. Prolonged silence is not rest, it is the only
+                      # signature a dead writer can produce. The pulse makes an
+                      # absent row mean something.
+                      "alive"}, EVENTS)
 check("'request' and 'probe' are distinct events (a turn is not a probe)",
       "request" in EVENTS and "probe" in EVENTS)
 
