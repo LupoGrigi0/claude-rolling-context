@@ -101,7 +101,14 @@ panel must SAY so rather than showing plausible defaults.
 **"FLOOR" MEANS TWO DIFFERENT THINGS — 68,000 tokens apart. Name them both.**
 Added 2026-09-03, Zara's finding, and the ambiguity is mine.
   * **Scaffolding floor** — system prompt + tool definitions. Genuinely
-    unevictable, ~84,500 (range 83-95k, an apportionment not a measurement).
+    unevictable. **~84,500** — a REGRESSION over 7,202 requests on two
+    instances (intercepts 84,132 and 84,906, agreeing within 774 tokens).
+    Range 83-95k because subsets of the same data drift. This is the
+    best figure we have; it is NOT the apportionment.
+    (Corrected 2026-09-05: this line previously called 84,500 "an
+    apportionment not a measurement", which mislabelled the regression
+    result as the thing it replaced. The APPORTIONMENT is the ~92,885 the
+    runtime [FLOOR] line reports, described below, and it OVERSTATES.)
     This is the band at the bottom of the graph.
   * **Stall level** — what the runtime `gate` note calls `floor ~152597`. It is
     NOT a floor. It is `total_input` at the moment three consecutive cycles
