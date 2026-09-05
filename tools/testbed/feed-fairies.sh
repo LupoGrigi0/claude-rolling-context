@@ -57,6 +57,45 @@ ASKS=(
   "Material below. Pick the single sentence you'd keep if you could keep only one, and say why that one."
 )
 
+# ---- FEED EVENT LOG -------------------------------------------------------
+# WHY. Ferry's metrics.csv records the REQUEST a feed causes, never the feed.
+# So "traffic arriving with no upstream cause" -- the one reachability signal
+# that survives a cadence change -- was not computable from the file.
+#
+# Found 2026-09-05 with Zara-c207. She built a reachability proxy from request
+# RATE (subject vs peer median). It has two problems: the denominator is a
+# configuration choice (I changed the feed cron on 09-01 and manufactured the
+# baseline), and the peer control exists only 20.6% of the time, because the
+# channel deaths we are detecting are what kill the peers. THE FAILURE MODE
+# DESTROYS THE CONTROL GROUP FOR DETECTING THE FAILURE MODE.
+#
+# A fed mind's requests follow a feed. An unreachable mind's do not -- it is
+# self-driving, so its traffic has no upstream cause. That is invariant to
+# cadence: change the cron all you like and "traffic with nothing behind it"
+# still means the same thing. Rate does not survive a config change. Causation
+# does.
+#
+# WRITTEN TO A SEPARATE FILE, DELIBERATELY. metrics.csv is written by the proxy
+# under an in-process lock; a shell script appending concurrently would race it,
+# and corrupting the evidence file to instrument it is not a trade worth making.
+# Same directory, same timestamp format, correlate on ts.
+#
+#   ts_iso,instance,kind,rc,note
+#
+# rc is curl's exit status. A FEED THAT FAILED IS NOT A FEED: if the POST did
+# not land, the mind was not fed, and a row claiming otherwise would put a
+# phantom cause under traffic that had none -- the exact error this file exists
+# to prevent.
+_log_feed() {
+  local name="$1" kind="$2" rc="$3" note="${4:-}"
+  local dir="${FERRY_DATA_ROOT:-/mnt/lupoportfolio/ferry-testbed/ferry-data}/$name"
+  [ -d "$dir" ] || return 0
+  local f="$dir/feeds.csv"
+  [ -s "$f" ] || printf 'ts_iso,instance,kind,rc,note\n' >> "$f" 2>/dev/null
+  printf '%s,%s,%s,%s,"%s"\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+         "$name" "$kind" "$rc" "${note//\"/\"\"}" >> "$f" 2>/dev/null || true
+}
+
 send() {
   local name="$1" ktok="$2"
   local port="${PORT[$name]:-}"
@@ -79,9 +118,11 @@ send() {
   body=$(jq -nc --arg from "Crossing" --arg text "$ask"$'\n\n---\n\n'"$slab" \
             '{from:$from, text:$text}') || return 1
 
-  local resp
+  local resp rc
   resp=$(curl -s --max-time 20 -X POST "http://127.0.0.1:$port/direct-message" \
           -H 'Content-Type: application/json' --data-binary "$body")
+  rc=$?
+  _log_feed "$name" "feed" "$rc" "slab=${ktok}k chars=${#slab}"
   printf '%s  %-10s slab=%2sk chars=%-7s %s\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$name" "$ktok" "${#slab}" \
     "$(echo "$resp" | head -c 120)" | tee -a "$LOG"

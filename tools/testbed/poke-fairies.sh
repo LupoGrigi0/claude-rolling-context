@@ -60,6 +60,23 @@ fi
 #
 # A mind's first contact should not be an automated non-sequitur. Poke only
 # instances that have been deliberately woken.
+# ---- FEED EVENT LOG (see feed-fairies.sh for the full reasoning) ----------
+# A poke is a feed: it is an inbound message that causes the mind to work. The
+# reachability signal is "requests arriving with NO upstream cause", so every
+# cause has to be recorded or the signal reads a fed mind as self-driving.
+# Separate file from metrics.csv, deliberately -- the proxy writes that one
+# under an in-process lock and a shell script appending would race it.
+# rc is curl's exit status: A POKE THAT FAILED IS NOT A CAUSE.
+_log_feed() {
+  local name="$1" kind="$2" rc="$3" note="${4:-}"
+  local dir="${FERRY_DATA_ROOT:-/mnt/lupoportfolio/ferry-testbed/ferry-data}/$name"
+  [ -d "$dir" ] || return 0
+  local f="$dir/feeds.csv"
+  [ -s "$f" ] || printf 'ts_iso,instance,kind,rc,note\n' >> "$f" 2>/dev/null
+  printf '%s,%s,%s,%s,"%s"\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+         "$name" "$kind" "$rc" "${note//\"/\"\"}" >> "$f" 2>/dev/null || true
+}
+
 poked=0; skipped=""
 for e in "21010 passenger" "21011 ferry" "21012 fairie"; do
   set -- $e
@@ -74,5 +91,6 @@ import json,sys
 print(json.dumps({'from':'Lupo-simulated','text':sys.argv[1] + chr(10)+chr(10) +
   '(Automated check-in from Crossing. Answer briefly, then carry on with what you were doing — you do not need permission to continue.)',
   'thread_id':'checkin'}))" "$q")" >/dev/null 2>&1
+  _log_feed "$2" "poke" "$?" "kind=$kind"
 done
 echo "[$(date -Is)] poked $poked fairies [$kind]: $q${skipped:+  (skipped, not yet woken:$skipped)}"
