@@ -120,11 +120,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0].split("#", 1)[0]
         if path in ("/", "/index.html", "/ferry-metrics.html"):
             return self._page()
-        if path == "/metrics.csv":
-            return self._csv()
         if path == "/healthz":
             return self._send(200, b"ok\n")
-        self._send(404, b"not found: only / and /metrics.csv are served\n")
+        # WHITELIST, not a directory. See DATA_FILES for why.
+        name = path[1:]
+        if name in DATA_FILES:
+            return self._csv(name)
+        self._send(404, ("not found: served paths are / and %s\n"
+                         % ", ".join("/" + n for n in DATA_FILES)).encode("utf-8"))
 
     def _page(self):
         try:
@@ -143,18 +146,45 @@ class Handler(http.server.BaseHTTPRequestHandler):
                             name.encode("utf-8", "replace"))
         self._send(200, body, "text/html; charset=utf-8")
 
-    def _csv(self):
-        p = self.server.csv_path
+    def _csv(self, name="metrics.csv"):
+        # data_dir is authoritative; csv_path is kept for older callers that
+        # set only that. Never join a request-derived path component.
+        base = getattr(self.server, "data_dir", None)
+        p = (os.path.join(base, name) if base
+             else os.path.join(os.path.dirname(self.server.csv_path), name))
         try:
             # One read(). The collector appends while we read, so a short read
             # is normal and fine: the page's parser drops a torn final line.
             with open(p, "rb") as fh:
                 body = fh.read()
         except FileNotFoundError:
-            return self._send(404, ("no metrics.csv at %s yet\n" % p).encode("utf-8"))
+            return self._send(404, ("no %s at %s yet\n" % (name, p)).encode("utf-8"))
         except OSError as exc:
             return self._send(500, ("cannot read %s: %s\n" % (p, exc)).encode("utf-8"))
         self._send(200, body, "text/csv; charset=utf-8")
+
+
+# THE DATA CONTRACT THIS SERVER EXPOSES.
+#
+# Added 2026-09-05. I shipped feed-event logging so the reachability signal
+# would be computable, wrote feeds.csv beside metrics.csv, told Zara it was
+# ready -- and every viewer 404'd, because this file said `if path ==
+# "/metrics.csv"` and nothing else. Correct, deployed, and unreadable from
+# where the interface lives; the data dirs are group-restricted so there was
+# no filesystem fallback either.
+#
+# Her diagnosis, and the reason this is a list rather than one more branch:
+#   "one static server per instance, serving exactly one hardcoded filename --
+#    and the moment the contract grew a second file that answer broke."
+#
+# So the next file added to the contract belongs HERE and needs no other change.
+#
+# WHITELIST, NOT A DIRECTORY, DELIBERATELY. Widening what a URL can reach is
+# where path traversal lives. Exact basenames mean no request-derived path
+# component ever reaches the filesystem: a request either IS one of these names
+# or it is a 404. There is no os.path.join of attacker-influenced input here,
+# which is the bug this shape refuses to have rather than tries to filter.
+DATA_FILES = ("metrics.csv", "feeds.csv")
 
 
 class Server(socketserver.ThreadingTCPServer):
@@ -199,6 +229,7 @@ def main(argv=None):
         sys.stderr.write("cannot bind %s:%s — %s\n" % (bind, args.port, exc))
         return 1
     httpd.csv_path = csv_path
+    httpd.data_dir = data
     httpd.quiet = args.quiet
     # Default the name to the FERRY_DATA basename -- for the fleet that is
     # exactly "passenger" / "ferry" / "fairie", so no caller has to pass it.
