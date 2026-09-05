@@ -55,7 +55,7 @@ for n in passenger ferry fairie; do
 
   cur=$(grep -c ',curation,' "$M")
   err=$(grep -c ',error,' "$M")
-  ctx=$(awk -F, '$2=="request"{c=$4} END{print c+0}' "$M")
+  ctx=$(awk -F, '$2=="request" && $0 !~ /interleaved/ {c=$4} END{print c+0}' "$M")
   lastts=$(tail -1 "$M" | cut -d, -f1)
   lastepoch=$(date -u -d "$lastts" +%s 2>/dev/null || echo "$NOW")
   quiet=$(( (NOW - lastepoch) / 60 ))
@@ -283,7 +283,7 @@ if [ -z "$say" ] && [ "$mins_since" -ge "$HEARTBEAT_MIN" ]; then
   happened would be false: 8 curations ran in one such quiet window.
 $(for n in passenger ferry fairie; do
     printf '  %-10s ctx=%s curations=%s\n' "$n" \
-      "$(awk -F, '$2=="request"{c=$4} END{print c+0}' "$TB/ferry-data/$n/metrics.csv")" \
+      "$(awk -F, '$2=="request" && $0 !~ /interleaved/ {c=$4} END{print c+0}' "$TB/ferry-data/$n/metrics.csv")" \
       "$(grep -c ',curation,' "$TB/ferry-data/$n/metrics.csv")"
   done)"
 fi
