@@ -56,6 +56,36 @@ as the same pixel. A zero in `tokens_evicted` means a curation ran and moved
 nothing — a serious failure. A blank means no curation. Please make them
 visually distinct, not merely different values.
 
+**TWO COLUMNS, TWO INSTRUMENTS — added 2026-09-06, because I just made this
+mistake myself and published it.** The table mixes measured and estimated
+quantities with nothing marking the boundary:
+
+    context_tokens   on request AND curation rows   MEASURED (real API count)
+    tokens_evicted   on curation rows               ESTIMATE (chars / 4)
+    carry_chars      on curation rows               MEASURED (a string length)
+
+`tokens_evicted` is `batch_chars // 4`. The `note` field says
+`estimate:chars/4` — and that note qualifies **only that one field**, not the
+row. I read it as covering the row, subtracted `tokens_evicted` from
+`context_tokens`, and reported the difference as a systematic ~14,000-token
+anomaly across two curation cycles. There was no anomaly. I had subtracted an
+estimate from a measurement.
+
+**So: never difference or sum those two columns.** Trigger-minus-evicted is not
+the landing context and will not equal it. If you want the landing, read the
+`context_tokens` of the first non-`interleaved` `request` row *after* the
+curation — that is measured, and it is the only honest source for it.
+
+This is the same disease as BLANK IS NOT ZERO one level up: there, a field's
+*absence* was ambiguous; here, a field's *provenance* is. If the page shows
+both columns, mark which one is estimated, or a reader will do the arithmetic I
+did. A number that looks like a measurement gets treated as one.
+
+**And `carry_chars` is `len(carry or "")`, so a 0 there is a REAL zero** — the
+carry string was genuinely empty. Blank-is-not-zero does not apply to that
+column, which is exactly why per-column provenance matters more than a single
+global rule.
+
 ---
 
 ## 4. Each element, and the failure that produced it
