@@ -49,17 +49,22 @@ src = open(SCRIPT, encoding="utf-8").read()
 # Two sites existed: the per-instance check (~line 58) and the quiet-report
 # summary (~line 286). Fixing one and leaving the other is exactly the
 # "fix the case, leave the class" failure this file is about.
-naive = re.findall(r'\$2=="request"\s*\{c=\$4\}', src)
+naive = re.findall(r'\$2=="request"\s*\{c=\$4\}\s*END', src)
 check("no naive $2==\"request\"{c=$4} remains (both call sites fixed)",
       len(naive), 0)
 
-guarded = re.findall(r'\$2=="request"[^\n]*interleaved[^\n]*\{c=\$4\}', src)
+guarded = re.findall(r'\$2=="request"[^\n]*interleaved[^\n]*c=\$4', src)
 check("every context extraction guards against interleaved", len(guarded), 2)
 
 # ---- 2. run the REAL expression from the script -------------------------
-m = re.search(r"awk -F, '([^']*\{c=\$4\}[^']*)'", src)
+m = re.search(r"awk -F, '([^']*c=\$4[^']*)'", src)
 check("extracted an awk program from the script", bool(m), True)
-prog = m.group(1) if m else '$2=="request"{c=$4} END{print c+0}'
+prog = m.group(1) if m else None
+if prog is None:
+    FAILED.append("could not extract the awk program; refusing to test a guess")
+    print(f"\n{PASSED} passed, {len(FAILED)} failed")
+    for f in FAILED: print(f"  FAIL  {f}")
+    sys.exit(1)
 
 HDR = ("ts_iso,event,cycle,context_tokens,tokens_in,tokens_evicted,"
        "archive_lines,archive_bytes,carry_chars,model,window,note\n")
@@ -91,14 +96,36 @@ check("non-request events never set ctx",
       ctx([R, "2026-09-05T10:42:00Z,curation,,,,50000,,,,haiku,,cycle"]),
       "139421")
 
-# ---- 3. KNOWN LIMITATION, asserted so it is visible not hidden ----------
+# ---- 3. THE STALENESS TRAP, found in production 2026-09-08 --------------
+# The fix above created a worse bug than the one it fixed. After curation 151
+# EVERY subsequent request was tagged interleaved, so "first non-interleaved"
+# selected a row that was two hours old and 44,000 tokens wrong (149,854 vs a
+# true 105,476). The original bug was ~3,800 tokens. Staleness was 10x worse.
+#
+# A filter that is correct about which rows are UNTRUSTWORTHY can still be
+# wrong about whether any rows REMAIN. Excluding a class silently assumes the
+# remaining class is non-empty, and nothing checked that.
+#
+# Fix: prefer a non-interleaved row only while it is RECENT (within the last
+# few rows); past that, freshness beats purity and we report the latest row.
+check("stale non-interleaved falls back to the fresh row",
+      ctx([R, IL, IL, IL, IL]), "135602")
+check("all-interleaved reports the latest, not 0",
+      ctx([IL, IL, IL, IL, IL]), "135602")
+check("but a RECENT non-interleaved row still wins (original bug stays fixed)",
+      ctx([R, IL, IL]), "139421")
+
+# ---- 4. KNOWN LIMITATION, asserted so it is visible not hidden ----------
 # A file with ONLY interleaved traffic yields 0. That is blank-is-not-zero in
 # another hat: "no main-thread reading" renders identically to "context is
 # empty". Pre-existing, unchanged by this fix, and low severity (it needs a
 # proxy that has never seen one ordinary request). Documented deliberately --
 # an accepted limitation stated out loud beats one discovered later.
-check("KNOWN: all-interleaved file reports 0, not blank (accepted, logged)",
-      ctx([IL, IL]), "0")
+# superseded 2026-09-08: an all-interleaved file no longer reports 0, it
+# reports the latest row. The old assertion documented a limitation that the
+# staleness fix removed.
+check("SHORT all-interleaved file reports the row, not 0",
+      ctx([IL, IL]), "135602")
 
 print(f"\n{PASSED} passed, {len(FAILED)} failed")
 for f in FAILED:
