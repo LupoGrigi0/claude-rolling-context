@@ -96,24 +96,51 @@ check("non-request events never set ctx",
       ctx([R, "2026-09-05T10:42:00Z,curation,,,,50000,,,,haiku,,cycle"]),
       "139421")
 
-# ---- 3. THE STALENESS TRAP, found in production 2026-09-08 --------------
-# The fix above created a worse bug than the one it fixed. After curation 151
-# EVERY subsequent request was tagged interleaved, so "first non-interleaved"
-# selected a row that was two hours old and 44,000 tokens wrong (149,854 vs a
-# true 105,476). The original bug was ~3,800 tokens. Staleness was 10x worse.
+# ---- 3. STALENESS IS A TIME PROPERTY, NOT A ROW-COUNT ONE ---------------
+# Found in production twice in one morning.
 #
-# A filter that is correct about which rows are UNTRUSTWORTHY can still be
-# wrong about whether any rows REMAIN. Excluding a class silently assumes the
-# remaining class is non-empty, and nothing checked that.
+# FIRST: after curation 151 every request was tagged interleaved, so "first
+# non-interleaved" latched a row 2 hours old and 44,000 tokens wrong (149,854
+# vs a true 105,476). The original bug was ~3,800. Staleness was 10x worse.
 #
-# Fix: prefer a non-interleaved row only while it is RECENT (within the last
-# few rows); past that, freshness beats purity and we report the latest row.
-check("stale non-interleaved falls back to the fresh row",
-      ctx([R, IL, IL, IL, IL]), "135602")
-check("all-interleaved reports the latest, not 0",
-      ctx([IL, IL, IL, IL, IL]), "135602")
-check("but a RECENT non-interleaved row still wins (original bug stays fixed)",
-      ctx([R, IL, IL]), "139421")
+# SECOND: my fix for that counted ROWS ("fall back if 3+ interleaved follow"),
+# and it broke the FROZEN case. ferry died mid-burst with 3 interleaved rows
+# after its last main-thread one -- 2m41s apart, nothing stale at all. The
+# row-count rule fell back and reported the interleaved value, reintroducing
+# the exact bug this file exists to prevent, on a different instance.
+#
+# The two cases separate cleanly on TIME and not at all on row position:
+#     ferry      last_ni 10:39:00  last_any 10:41:41   gap 2m41s  -> use ni
+#     passenger  last_ni 09:00:12  last_any 13:00:15   gap 4h     -> use latest
+#
+# A filter can be correct about which rows are untrustworthy, wrong about
+# whether any remain, and then wrong again about how to tell.
+
+T0 = "2026-09-05T10:39:00Z"
+def row(ts, ctx, il=False):
+    return f"{ts},request,,{ctx},,,,,,haiku,,injected" + ("; interleaved" if il else "")
+
+# FROZEN: interleaved trailers seconds later. Purity wins.
+check("frozen instance: seconds-old trailers do NOT displace main-thread",
+      ctx([row("2026-09-05T10:39:00Z", 139421),
+           row("2026-09-05T10:41:27Z", 134802, True),
+           row("2026-09-05T10:41:34Z", 135030, True),
+           row("2026-09-05T10:41:41Z", 135602, True)]), "139421")
+
+# LIVE + STALE: hours of interleaved traffic. Freshness wins.
+check("live instance: hours-stale main-thread row IS displaced",
+      ctx([row("2026-09-08T09:00:12Z", 149854),
+           row("2026-09-08T09:30:05Z",  99002, True),
+           row("2026-09-08T13:00:15Z", 111669, True)]), "111669")
+
+check("no non-interleaved row at all -> latest, not 0",
+      ctx([row("2026-09-08T09:30:05Z", 99002, True),
+           row("2026-09-08T13:00:15Z", 111669, True)]), "111669")
+
+check("a later main-thread row always wins outright",
+      ctx([row("2026-09-08T09:00:12Z", 149854),
+           row("2026-09-08T09:30:05Z",  99002, True),
+           row("2026-09-08T13:00:15Z", 105000)]), "105000")
 
 # ---- 4. KNOWN LIMITATION, asserted so it is visible not hidden ----------
 # A file with ONLY interleaved traffic yields 0. That is blank-is-not-zero in
