@@ -1620,6 +1620,17 @@ def main():
     if _metrics:
         log.info(f"  Ferry metrics: {_metrics.path}")
         _metrics.row("proxy_start", window=_window, note=_params_note())
+        # THE PULSE MUST BE STARTED, NOT MERELY DEFINED.
+        # c459c74 added MetricsWriter.start_liveness and 18 passing assertions
+        # that call it DIRECTLY. Nothing in the server ever did. For eleven days
+        # the pulse existed in git, passed its tests, was reported as "written",
+        # and emitted exactly zero rows -- because a test that reaches past the
+        # wiring proves the unit works and says nothing about whether it runs.
+        # I found this while preparing to deploy it, one line before restarting
+        # three proxies and calling it done.
+        started = _metrics.start_liveness()
+        log.info(f"  Ferry liveness pulse: "
+                 f"{'every %.0fs' % metrics.LIVENESS_SEC if started else 'OFF'}")
     elif _ferry_curation:
         # Ferry mode without a metrics file is a fact worth one loud line in
         # the banner, next to everything else this proxy will and won't do.
