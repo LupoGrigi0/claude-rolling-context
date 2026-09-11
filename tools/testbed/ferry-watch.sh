@@ -111,8 +111,34 @@ for n in passenger ferry fairie; do
     # Interesting = landed above the convergence ceiling (target*1.25), or moved
     # almost nothing (<2,000 tokens: the degenerate turns=2 shape). A healthy
     # cycle is now COUNTED, and reported only by the periodic heartbeat.
+    # SKIP REQUESTS THAT WERE ALREADY IN FLIGHT WHEN THE CURATION FIRED.
+    #
+    # Ferry rewrites the request it is handling; a request already on the wire
+    # misses that rewrite and comes back at roughly its PRE-curation size. It
+    # arrives 1-3s later and is NOT the landing. Taking it produced two false
+    # alarms -- cycle 151 ("landed 149854", true 99002) and cycle 156
+    # ("landed 150442", true 100644) -- each announcing a landing ABOVE the
+    # trigger on a cycle that had converged perfectly.
+    #
+    # I WROTE THIS EXACT RULE INTO ZARA'S UI SPEC AND LEFT IT OUT OF MY OWN
+    # WATCHER. Fixed the case, left the class, for the fifth time this fortnight.
+    #
+    # TIME DOES NOT DISCRIMINATE -- I tried a 10s window first and it was
+    # WRONG: true landings arrive at +2s and the in-flight strays at +3s. A
+    # time filter silently moved three CORRECT cycles (150/154/155) to later,
+    # larger requests. Caught only by checking the cycles that were already
+    # right, which is the check I nearly skipped.
+    #
+    # MAGNITUDE discriminates cleanly. An in-flight request sits within ~1% of
+    # the trigger (149,854 vs 150,126; 150,442 vs 150,268). A true landing is
+    # ~33% below it. So: the landing is the first request meaningfully under
+    # the context that triggered the curation.
+    #
+    # Verified across cycles 148-156: corrects both false alarms, changes
+    # nothing else.
     land=$(awk -F, -v t="$(grep ',curation,' "$M" | tail -1 | cut -d, -f1)" \
-             '$2=="request" && $1>t {print $4; exit}' "$M")
+             '$2=="curation" && $1==t {c=$4}
+              $2=="request" && $1>t && c>0 && $4+0 < c*0.9 {print $4; exit}' "$M")
     ev=$(grep ',curation,' "$M" | tail -1 | cut -d, -f6)
     # READ THE TARGET THE PROXY ACTUALLY REPORTED. Do not guess it.
     #

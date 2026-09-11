@@ -63,7 +63,8 @@ prog = m.group(1) if m else None
 if prog is None:
     FAILED.append("could not extract the awk program; refusing to test a guess")
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
-    for f in FAILED: print(f"  FAIL  {f}")
+    for f in FAILED:
+        print(f"  FAIL  {f}")
     sys.exit(1)
 
 HDR = ("ts_iso,event,cycle,context_tokens,tokens_in,tokens_evicted,"
@@ -153,6 +154,52 @@ check("a later main-thread row always wins outright",
 # staleness fix removed.
 check("SHORT all-interleaved file reports the row, not 0",
       ctx([IL, IL]), "135602")
+
+# ---- 5. THE IN-FLIGHT STRAY: a curation's own request is NOT the landing ---
+# Ferry rewrites the request it is handling. A request ALREADY ON THE WIRE
+# misses that rewrite and returns at roughly its PRE-curation size, 1-3s later.
+# Taking it as the landing produced two false alarms announcing a landing
+# ABOVE the trigger on cycles that had converged perfectly:
+#     cycle 151  reported 149,854   true 99,002
+#     cycle 156  reported 150,442   true 100,644
+#
+# I WROTE THIS RULE INTO ZARA'S UI SPEC AND LEFT IT OUT OF MY OWN WATCHER.
+#
+# MY FIRST FIX WAS WRONG AND THE FAILING CASES DID NOT CATCH IT. I used a 10s
+# time window; true landings arrive at +2s and the stray at +3s, so TIME DOES
+# NOT DISCRIMINATE. It silently moved three CORRECT cycles to later, larger
+# requests. Only checking the cycles that were ALREADY RIGHT exposed it.
+#   **A fix verified only against the failing cases is half-tested.**
+#
+# MAGNITUDE discriminates: an in-flight request sits within ~1% of the trigger,
+# a true landing ~33% below. Rule: first request under 90% of the curation ctx.
+
+LAND = ('$2=="curation" && $1==t {c=$4} '
+        '$2=="request" && $1>t && c>0 && $4+0 < c*0.9 {print $4; exit}')
+
+def landing(curation_ctx, after):
+    """after = [(ctx, note)] in arrival order"""
+    rows = [f"2026-09-11T18:00:05Z,curation,9,{curation_ctx},,58931,,,0,,,x"]
+    for i, (ctx, note) in enumerate(after):
+        rows.append(f"2026-09-11T18:00:{6+i:02d}Z,request,,{ctx},,,,,,haiku,,{note}")
+    f = tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False)
+    f.write(HDR); f.writelines(r + "\n" for r in rows); f.close()
+    try:
+        out = subprocess.run(["awk", "-F,", "-v", "t=2026-09-11T18:00:05Z", LAND, f.name],
+                             capture_output=True, text=True, timeout=10)
+        return out.stdout.strip()
+    finally:
+        os.unlink(f.name)
+
+check("THE cycle-156 case: in-flight stray is skipped",
+      landing(150268, [(150442, "injected"), (100644, "injected")]), "100644")
+check("THE cycle-151 case: stray only 272 below trigger is still skipped",
+      landing(150126, [(149854, "injected"), (99002, "injected")]), "99002")
+check("a FAST true landing is NOT skipped (the bug my first fix introduced)",
+      landing(150286, [(99588, "injected")]), "99588")
+check("no stray at all: first request wins",
+      landing(150544, [(100302, "injected")]), "100302")
+
 
 print(f"\n{PASSED} passed, {len(FAILED)} failed")
 for f in FAILED:
