@@ -41,6 +41,14 @@ HEADER = [
     "ts_iso", "event", "cycle", "context_tokens", "tokens_in",
     "tokens_evicted", "archive_lines", "archive_bytes", "carry_chars",
     "model", "window", "note",
+    # SEQ IS APPENDED, NEVER INSERTED. Zara's proposal put it at position 1;
+    # that would shift every positional reader by one -- ferry-watch's
+    # `$2=="request"` would silently start matching the sequence number, and
+    # nothing would report it. Appending means old readers keep working
+    # untouched and old rows simply have no seq, which reads as blank rather
+    # than as zero. The cost is that seq is not adjacent to ts_iso. That is
+    # a formatting preference; not breaking six live readers is not.
+    "seq",
 ]
 HEADER_LINE = ",".join(HEADER)
 
@@ -161,13 +169,14 @@ class MetricsWriter:
         # interleaved streams into a saw of equal-and-opposite fake spikes.
         self._session_context = OrderedDict()
         self._cycle = 0
+        self._seq = 0
         self.rows_written = 0
         self.errors = 0
         # Constructing the writer creates the file with its header, so a
         # session that never curates still leaves a readable (if empty) log.
         try:
             self._ensure_header()
-            self._seed_cycle()
+            self._seed_counters()
         except Exception as err:          # unwritable path, bad dir, ...
             self._note_error(err)
 
@@ -193,7 +202,7 @@ class MetricsWriter:
                 f.write(HEADER_LINE + "\n")
                 f.flush()
 
-    def _seed_cycle(self):
+    def _seed_counters(self):
         """Continue the cycle numbering across a proxy restart. Cheap: the
         metrics file is one short line per event, read once at boot."""
         try:
@@ -202,6 +211,15 @@ class MetricsWriter:
                     if len(rec) >= 3 and rec[1] == "curation" and rec[2]:
                         try:
                             self._cycle = max(self._cycle, int(rec[2]))
+                        except ValueError:
+                            pass
+                    # SEQ MUST SURVIVE A RESTART OR IT MANUFACTURES THE VERY
+                    # GAP IT EXISTS TO DETECT: a counter reset to 0 makes every
+                    # post-restart row look like a loss. Same file, same pass,
+                    # same precedent as the cycle counter above.
+                    if len(rec) >= 13 and rec[12]:
+                        try:
+                            self._seq = max(self._seq, int(rec[12]))
                         except ValueError:
                             continue
         except (OSError, csv.Error):
@@ -238,6 +256,14 @@ class MetricsWriter:
                 self._last_write = time.time()
                 if event == "request":
                     self._apply_delta(fields, session)
+                # SEQ: assigned inside the lock, immediately before the row
+                # is built, so it is monotonic and gap-free per writer. A gap
+                # in this column means a row was LOST -- the one thing a
+                # reader could never previously distinguish from nothing
+                # having happened. (Zara, 2026-09-09, from Messenger's
+                # "a silent loss is not a hole, it is the absence of a hole".)
+                self._seq += 1
+                fields["seq"] = self._seq
                 values = [fields.get("ts_iso") or _now(), event] + [
                     _fmt(fields.get(name)) for name in HEADER[2:]]
                 if event not in EVENTS:

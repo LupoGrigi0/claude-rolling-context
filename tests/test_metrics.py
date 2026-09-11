@@ -37,8 +37,19 @@ import metrics  # noqa: E402
 from metrics import (EVENTS, HEADER, HEADER_LINE, ArchiveTotals,  # noqa: E402
                      MetricsWriter, get_writer, metrics_enabled)
 
+# THE CONTRACT IS PINNED BYTE-FOR-BYTE ON PURPOSE. A schema change must be a
+# deliberate edit here, never something that slips through because a test was
+# lenient. This assertion caught the `seq` addition on 2026-09-11, which is
+# exactly what it is for.
+#
+# `seq` (2026-09-11, Zara's proposal) is APPENDED, never inserted. Inserting it
+# at position 1 -- where it reads better -- would shift every positional reader
+# by one, and ferry-watch's `$2=="request"` would silently start matching the
+# sequence number with nothing to report it. Six live readers split on commas.
+# Adjacency to ts_iso is a preference; not breaking them is not.
 CONTRACT_HEADER = ("ts_iso,event,cycle,context_tokens,tokens_in,tokens_evicted,"
-                   "archive_lines,archive_bytes,carry_chars,model,window,note")
+                   "archive_lines,archive_bytes,carry_chars,model,window,note,"
+                   "seq")
 
 passed = failed = 0
 
