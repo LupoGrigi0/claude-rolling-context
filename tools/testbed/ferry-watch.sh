@@ -56,7 +56,13 @@ for n in passenger ferry fairie; do
   cur=$(grep -c ',curation,' "$M")
   err=$(grep -c ',error,' "$M")
   ctx=$(awk -F, '$2=="request"{lt=$1; lc=$4} $2=="request" && $0 !~ /interleaved/ {nt=$1; nc=$4} END{if(nc==""){print lc+0; exit} gsub(/[-T:Z]/," ",nt); gsub(/[-T:Z]/," ",lt); if(mktime(lt)-mktime(nt) > 900) print lc+0; else print nc+0}' "$M")
-  lastts=$(tail -1 "$M" | cut -d, -f1)
+  # QUIET MUST MEASURE THE MIND'S SILENCE, NOT THE FILE'S. `tail -1` was
+  # correct until 2026-09-09, when the liveness pulse (9730ca2) began writing
+  # an `alive` row every 300s -- which pinned `quiet` at <=5 and made
+  # STALL_MIN=50 UNREACHABLE on every running proxy in the fleet. passenger
+  # sat silent 156 minutes on 09-18 and was still reported `up`. A heartbeat
+  # row proves the WRITER lived; it says nothing about the MIND.
+  lastts=$(awk -F, 'NR>1 && $2!="alive"{t=$1} END{print t}' "$M")
   lastepoch=$(date -u -d "$lastts" +%s 2>/dev/null || echo "$NOW")
   quiet=$(( (NOW - lastepoch) / 60 ))
 
