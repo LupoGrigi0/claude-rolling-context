@@ -62,7 +62,19 @@ for n in passenger ferry fairie; do
   # STALL_MIN=50 UNREACHABLE on every running proxy in the fleet. passenger
   # sat silent 156 minutes on 09-18 and was still reported `up`. A heartbeat
   # row proves the WRITER lived; it says nothing about the MIND.
-  lastts=$(awk -F, 'NR>1 && $2!="alive"{t=$1} END{print t}' "$M")
+  #
+  # 2026-09-24: `alive` WAS NEVER THE ONLY ROW THE PROXY WRITES ABOUT ITSELF.
+  # ac33f99 excluded it and stopped -- the case fixed, the class left open.
+  # `proxy_start`, `restart` and `probe` are equally the writer, not the mind.
+  # MEASURED today: ferry's last non-`alive` row was a 09-09 `proxy_start`, its
+  # last REQUEST 2026-09-05T10:41:41Z -- a 4.4-day error in the reported silence
+  # of a mind I am protecting. Worse, a proxy restarting faster than STALL_MIN
+  # resets this clock forever: the pulse bug exactly, wearing a different row.
+  #
+  # WHITELIST, NOT BLACKLIST, AND THE DIRECTION IS THE WHOLE POINT. An unknown
+  # new event type must make this alarm fire EARLY (a cheap false alarm), never
+  # LATE (a missed one). A blacklist fails open. This fails closed.
+  lastts=$(awk -F, 'NR>1 && $2 ~ /^(request|curation|archive_write|fetch|gate|error)$/{t=$1} END{print t}' "$M")
   lastepoch=$(date -u -d "$lastts" +%s 2>/dev/null || echo "$NOW")
   quiet=$(( (NOW - lastepoch) / 60 ))
 
