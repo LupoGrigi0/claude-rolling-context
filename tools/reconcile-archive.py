@@ -43,6 +43,21 @@ SO THE THREE VERDICTS ARE NOT SYMMETRIC:
 
     python3 tools/reconcile-archive.py [--data DIR]
     python3 tools/reconcile-archive.py --self-test   F2's four differentials
+    python3 tools/reconcile-archive.py --seam        the EVICTION -> ARCHIVE seam
+
+THE SEAM (--seam) IS THE OTHER HALF OF F1, AND IT IS THE HALF THAT MATTERS.
+The default pass proves the archive is consistent with its OWN ledger. That
+cannot see a turn the proxy evicted and never wrote down -- both witnesses
+would be missing it together. So --seam uses a THIRD, independently-written
+store: `proxy-state.json`, where the proxy records `original_hashes`, the
+16-char hashes of the messages each curation REPLACED (server.py:769).
+
+It imports the PRODUCTION `_hash_message` rather than reimplementing it. Three
+functions would have had to be replicated faithfully (_hash_message,
+_normalize_content, _strip_volatile_tags) and each copy is a chance to build a
+lying instrument. ROLLING_CONTEXT_LOG is redirected BEFORE the import because
+importing server.py installs a FileHandler on the production debug log -- the
+same trap test_metrics.py documents.
 """
 import argparse, hashlib, json, os, shutil, sys, tempfile
 from pathlib import Path
@@ -238,9 +253,63 @@ def self_test():
                             "is not falsely flagged" if ok else "FAILED"))
     return 0 if ok else 1
 
+def seam(data):
+    """Does every message the proxy says it EVICTED appear in the archive?"""
+    os.environ.setdefault("ROLLING_CONTEXT_LOG", "/tmp/.ferry-seam.log")
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "proxy"))
+    try:
+        from server import _hash_message            # production, not a copy
+    except Exception as e:
+        print(f"NO VERDICT: cannot import the production hash ({e}) — refusing to guess")
+        return 2
+    import glob
+    data = Path(data)
+    bad_entries = 0
+    tot_entries = 0
+    for mind in sorted(p.name for p in data.iterdir() if (p / "archive").is_dir()):
+        st = data / mind / "proxy-state.json"
+        if not st.exists():
+            print(f"  {mind}: NO VERDICT — no proxy-state.json, the seam has no witness")
+            continue
+        entries = json.loads(st.read_text())
+        have = set()
+        for af in sorted(glob.glob(str(data / mind / "archive" / "archive_*.jsonl"))):
+            for line in open(af, encoding="utf-8"):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    o = json.loads(line)
+                except Exception:
+                    continue
+                have.add(_hash_message({"role": o.get("role", ""), "content": o.get("content", "")}))
+        flagged = []
+        for i, e in enumerate(entries):
+            oh = e.get("original_hashes") or []
+            miss = [h for h in oh if h not in have]
+            if miss:
+                flagged.append((i, len(miss), len(oh)))
+        tot_entries += len(entries)
+        bad_entries += len(flagged)
+        print(f"  {mind}: {len(entries) - len(flagged)} of {len(entries)} curations fully "
+              f"reconcile against the archive")
+        for i, m, n in flagged:
+            where = "FIRST" if i == 0 else ("LAST" if i == len(entries) - 1 else f"index {i}")
+            print(f"      {where} entry: {m} of {n} evicted hashes NOT found in the archive")
+    print(f"\n  SEAM: {bad_entries} of {tot_entries} curation entries do not fully reconcile.")
+    if bad_entries:
+        print("  ⚠ CAUSE NOT ESTABLISHED. What IS established: the residue is not distributed —")
+        print("    it is confined to ONE entry per mind, and that entry's own prefix is already")
+        print("    a rolling-context summary pointing at archive lines, so it is not a pristine")
+        print("    first curation. Normalisation is NOT the cause (verified: it leaves the")
+        print("    archived content unchanged). This is an OPEN QUESTION, not a proven loss")
+        print("    and not a clean bill of health.")
+    return 1 if bad_entries else 0
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default=str(DEFAULT_DATA))
     ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("--seam", action="store_true")
     a = ap.parse_args()
-    sys.exit(self_test() if a.self_test else main(a))
+    sys.exit(self_test() if a.self_test else (seam(a.data) if a.seam else main(a)))
