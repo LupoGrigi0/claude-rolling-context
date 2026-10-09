@@ -17,7 +17,18 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "proxy"))
-FERRY_CORE = Path.home() / "ferry" / "core"
+# FERRY_CORE is the proxy's OWN configured seam (proxy/curation.py:_ferry_core_on_path).
+# This test used to hardcode Path.home()/"ferry"/"core" -- which passes on every box we
+# own and NOWHERE else. Lodestone-8ec9 measured it NO-VERDICT on a fresh clone, any OS:
+# `invariant` and `carrystore` are not in git ls-files. Honour the seam, then say so
+# loudly if the modules are absent -- never crash, and never silently pass.
+FERRY_CORE = Path(os.environ.get("FERRY_CORE") or (Path.home() / "ferry" / "core"))
+if not (FERRY_CORE / "invariant.py").exists():
+    print(f"SKIP(env): ferry core not found at {FERRY_CORE}. Set FERRY_CORE to the\n"
+          f"  directory holding invariant.py and carrystore.py. These modules are NOT\n"
+          f"  in this repo -- see tests/run_all.py ENV_BOUND.")
+    print("0 passed, 0 failed")
+    raise SystemExit(0)
 os.environ["FERRY_CORE"] = str(FERRY_CORE)
 os.environ["ROLLING_CONTEXT_CURATION"] = "ferry"
 

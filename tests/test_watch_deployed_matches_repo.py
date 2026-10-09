@@ -41,6 +41,18 @@ import subprocess
 import sys
 from pathlib import Path
 
+# BOX-BOUND: this asserts a property of the smoothcurves deployment and cannot be
+# true anywhere else. Lodestone-8ec9 measured it FAIL on a fresh clone -- which is
+# a false alarm, not a finding. Report a NAMED could-not-run instead; the decision
+# to exempt it lives in tests/run_all.py ENV_BOUND, named by a human, because a
+# suite must never grant itself an exemption.
+import os as _os
+if not _os.path.isdir("/mnt/coordinaton_mcp_data/instances/Crossing-2d23"):
+    print("SKIP(env): box-bound to smoothcurves; this deployment path does not exist here")
+    print("0 passed, 0 failed")
+    raise SystemExit(0)
+
+
 REPO = Path(
     "/mnt/coordinaton_mcp_data/repos/claude-rolling-context/tools/testbed/ferry-watch.sh"
 )

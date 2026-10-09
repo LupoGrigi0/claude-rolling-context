@@ -381,7 +381,10 @@ notdir.write_text("I am a file, not an archive directory")
 check("an archive path that is a FILE reports blanks, not zeros",
       ArchiveTotals(notdir).totals() == (None, None),
       ArchiveTotals(notdir).totals())
-if os.geteuid() != 0:
+# os.geteuid() does not exist on Windows -- Lodestone-8ec9 measured this suite
+# crashing here at check 53 of 105 on a fresh clone. A root-only branch must be
+# SKIPPED where the concept does not exist, not assumed absent.
+if hasattr(os, 'geteuid') and os.geteuid() != 0:
     locked = tmp / "arch-locked"
     (locked / "x").mkdir(parents=True)
     (locked / "x" / "archive_20260822.jsonl").write_text('{"role":"user"}\n')

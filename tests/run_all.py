@@ -39,6 +39,24 @@ TESTS = Path(__file__).resolve().parent
 REPO = TESTS.parent
 TIMEOUT = 300                      # a hang is a failure, not a wait
 ZERO_CHECK_ALLOWED = set()         # see ALLOW-LIST above. Keep it empty.
+
+# ENV-BOUND SUITES -- named HERE, by a human, with the reason. A suite may ANNOUNCE
+# that it cannot run (printing "SKIP(env): <why>"), but it may NEVER grant itself the
+# exemption: only this table does that, and anything skipping while absent from it is
+# a FAILURE. Lodestone-8ec9's rule, after his own suites printed SKIP, exited 0, and
+# an all-skipped live section read as green across twenty skip sites.
+#
+# Added 2026-10-09 after he cloned this repo fresh on Windows and measured 16 of 20 /
+# 414 checks against my 20 of 20 / 515. Three of the four were not Windows at all --
+# they were MY BOX leaking into the suite.
+ENV_BOUND = {
+    "test_curation.py":
+        "imports invariant/carrystore, which are NOT in this repo; set FERRY_CORE",
+    "test_watch_stall_survives_pulse.py":
+        "asserts a property of the smoothcurves deployment; box-bound by design",
+    "test_watch_deployed_matches_repo.py":
+        "compares deployed-vs-repo on smoothcurves; box-bound by design",
+}
 SUMMARY = re.compile(r'(\d+)\s+passed,\s+(\d+)\s+failed')
 
 def run(path):
@@ -53,6 +71,11 @@ def run(path):
 
     out = r.stdout + "\n" + r.stderr
     lines = out.splitlines()
+    skip = next((l.split("SKIP(env):", 1)[1].strip() for l in lines if "SKIP(env):" in l), None)
+    if skip is not None:
+        if path.name in ENV_BOUND:
+            return ("SKIP", 0, 0, f"env-bound: {skip}")
+        return ("FAIL", 0, 0, f"skipped but NOT on the ENV_BOUND allow-list: {skip}")
     m = None
     for line in reversed(lines):
         m = SUMMARY.search(line)
@@ -102,18 +125,26 @@ def main(argv):
         return 2
     tot_p = tot_f = 0
     bad = []
+    skipped = []
     for f in files:
         v, p, fl, detail = run(f)
         tot_p += p; tot_f += fl
-        if v != "GREEN":
+        if v == "SKIP":
+            skipped.append((f.name, detail))
+        elif v != "GREEN":
             bad.append((f.name, v, detail))
         print(f"  {v:<10} {f.name:<42} {p} passed, {fl} failed"
               + (f"   <- {detail}" if detail else ""))
     print()
     # Report the alarming numerator over the measured denominator -- never either alone.
-    print(f"SUITES: {len(files) - len(bad)} of {len(files)} green   "
-          f"({len(bad)} of {len(files)} NOT green)")
+    green = len(files) - len(bad) - len(skipped)
+    # Report the alarming numerator over the measured denominator, and NEVER hide the
+    # skips inside the green count -- that is how an all-skipped suite reads as healthy.
+    print(f"SUITES: {green} green, {len(skipped)} env-skipped, {len(bad)} NOT green "
+          f"— of {len(files)} total")
     print(f"CHECKS: {tot_f} failed of {tot_p + tot_f} executed")
+    for name, detail in skipped:
+        print(f"  SKIPPED (allow-listed): {name} — {detail}")
     for name, v, detail in bad:
         print(f"  NOT GREEN: {name} [{v}] {detail}")
     return 1 if bad else 0
@@ -129,6 +160,10 @@ def self_test():
         "test_zz_zero_checks.py":  "print('0 passed, 0 failed')\n",            # nothing ran
         "test_zz_no_summary.py":   "print('all good!')\n",                      # no summary line
         "test_zz_real_failure.py": "print('3 passed, 1 failed')\nimport sys; sys.exit(1)\n",
+        # The ALLOW-LIST's own control: a suite that announces a skip while absent from
+        # ENV_BOUND must FAIL. Without this case the allow-list is an unverified claim,
+        # and an unverified allow-list is exactly how twenty skip sites read as green.
+        "test_zz_unlisted_skip.py": "print('SKIP(env): I exempted myself')\nprint('0 passed, 0 failed')\n",
     }
     ok = True
     with tempfile.TemporaryDirectory() as d:
@@ -147,7 +182,7 @@ def self_test():
         ok &= good
         print(f"  {'PASS' if good else 'FAIL'}  planted test_zz_good.py"
               f"{'':<17} -> {v}  (a true green must not be flagged)")
-    print("\nSELF-TEST " + ("PASSED -- the runner fails on all three no-verdict shapes "
+    print("\nSELF-TEST " + ("PASSED -- the runner refuses every planted no-verdict shape "
                             "and passes a real green" if ok else "FAILED"))
     return 0 if ok else 1
 
