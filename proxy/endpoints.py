@@ -97,30 +97,36 @@ def scan_scopes(cwd: str = None) -> list:
 
     Returns [(scope_name, path, base_url), ...].
 
-    Walks from `cwd` toward the filesystem root collecting project scopes,
-    then appends user scope. ⚠ WHETHER CLAUDE CODE WALKS UP OR READS ONLY THE
-    PROJECT ROOT IS NOT MEASURED. Walking up is the FAIL-LOUD choice under that
-    uncertainty: over-detecting causes a visible refusal (annoying, fixable),
-    under-detecting causes a silent bypass (the bug). When in doubt about a
-    hierarchy, err toward noticing.
+    Reads project scope from `cwd` ONLY, then user scope.
+
+    ⚠ THIS USED TO WALK UP TO THE FILESYSTEM ROOT AND THAT WAS WRONG.
+    I chose walking up as the fail-loud default under an unmeasured assumption
+    ("err toward noticing"). Forge-ba0e then MEASURED it (2.1.283, fixture 7630,
+    local listener logging hits only, nothing trusted interactively):
+
+        P  settings in the LAUNCH dir itself          7 hits   <- positive control
+        W  settings in the PARENT, launched in child  0 hits
+        G  parent is a GIT ROOT, child inside it      0 hits
+
+    **Claude Code does NOT walk up. The launch cwd is the only project scope**
+    — an ancestor's file, even the git root's, is ignored and user scope wins.
+    So walking up would refuse on files the client never reads: the exact false
+    alarm I predicted would get this guard deleted by someone trying to work.
+
+    ERR-TOWARD-NOTICING IS FOR GENUINELY UNMEASURED LEVELS. Once somebody does
+    the measurement, the measurement wins — clinging to a safe default after it
+    has been refuted is just a different way of ignoring evidence.
+    His caveats, kept: n=1 per case, 2.1.283 only, `-p` mode only, and a
+    `settings.local.json` in cwd was not tested (case E covers it by refusal).
     """
     out = []
     here = os.path.abspath(cwd or os.getcwd())
-    seen = set()
-    while True:
-        for name, fname in (("project-local", "settings.local.json"),
-                            ("project", "settings.json")):
-            p = os.path.join(here, ".claude", fname)
-            if p in seen:
-                continue
-            seen.add(p)
-            base = _env_block(p).get("ANTHROPIC_BASE_URL", "")
-            if base:
-                out.append((name, p, base))
-        parent = os.path.dirname(here)
-        if parent == here:
-            break
-        here = parent
+    for name, fname in (("project-local", "settings.local.json"),
+                        ("project", "settings.json")):
+        p = os.path.join(here, ".claude", fname)
+        base = _env_block(p).get("ANTHROPIC_BASE_URL", "")
+        if base:
+            out.append((name, p, base))
     up = os.path.join(config_dir(), "settings.json")
     base = _env_block(up).get("ANTHROPIC_BASE_URL", "")
     if base:
