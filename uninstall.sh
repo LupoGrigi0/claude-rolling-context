@@ -13,7 +13,6 @@ CONF="$PY_CMD $SCRIPT_DIR/hooks/ferry_config.py"
 
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 PORT=""
-FERRY_SUPERVISED=0
 if [ -n "$PY_CMD" ]; then
     # A config error (e.g. no port) is fine here: we only lose the port fallback.
     if CONFIG_OUT=$($CONF env); then
@@ -32,24 +31,20 @@ echo "=== Uninstalling Rolling Context ==="
 # Stop proxy — PID file first, then whoever of OURS holds the port. Only ever a
 # pid whose cmdline is server.py: a stale pidfile or a shared port may name
 # something else entirely.
-if [ "$FERRY_SUPERVISED" = 1 ]; then
-    echo "Supervised: the supervisor owns the proxy on port $PORT; not stopping it."
-else
-    STOPPED=false
-    if [ -f "$PIDFILE" ]; then
-        PID=$(cat "$PIDFILE")
-        if kill -0 "$PID" 2>/dev/null && $CONF is-proxy "$PID"; then
-            kill "$PID"
-            echo "Stopped proxy (PID $PID)"
-            STOPPED=true
-        fi
+STOPPED=false
+if [ -f "$PIDFILE" ]; then
+    PID=$(cat "$PIDFILE")
+    if kill -0 "$PID" 2>/dev/null && $CONF is-proxy "$PID"; then
+        kill "$PID"
+        echo "Stopped proxy (PID $PID)"
+        STOPPED=true
     fi
-    if [ "$STOPPED" = false ] && [ -n "$PORT" ] && [ -n "$PY_CMD" ]; then
-        PROXY_PID=$($CONF who-holds "$PORT" 2>/dev/null || true)
-        if [ -n "$PROXY_PID" ] && $CONF is-proxy "$PROXY_PID"; then
-            kill "$PROXY_PID" 2>/dev/null || true
-            echo "Stopped proxy on port $PORT (PID $PROXY_PID)"
-        fi
+fi
+if [ "$STOPPED" = false ] && [ -n "$PORT" ] && [ -n "$PY_CMD" ]; then
+    PROXY_PID=$($CONF who-holds "$PORT" 2>/dev/null || true)
+    if [ -n "$PROXY_PID" ] && $CONF is-proxy "$PROXY_PID"; then
+        kill "$PROXY_PID" 2>/dev/null || true
+        echo "Stopped proxy on port $PORT (PID $PROXY_PID)"
     fi
 fi
 rm -f "$PIDFILE" "$CLAUDE_DIR/rolling-context-proxy.version"
@@ -117,8 +112,8 @@ if 'rolling-context-marketplace' in data:
 PYEOF
 fi
 
-# Clean settings.json: ANTHROPIC_BASE_URL ONLY if Ferry wrote it (restoring any
-# upstream it displaced), then Ferry's own env keys.
+# Clean settings.json: ANTHROPIC_BASE_URL ONLY if Ferry wrote it (restoring the
+# mind's own route from preferences "upstream", if declared), then Ferry's keys.
 if [ -n "$PY_CMD" ]; then
     $CONF unpoint
 fi

@@ -5,7 +5,8 @@ Two halves, no framework needed:
 
   A. endpoint resolution — server.py and compressor.py must agree on where
      traffic goes, including when the endpoint only exists in settings.json
-     (the hook writes it there and does not export it into this process).
+     (the hook passes preferences "upstream" as ROLLING_CONTEXT_UPSTREAM;
+     settings.json is not an upstream source).
   B. live proxy against a mock endpoint — two turns, asserting that background
      compaction reaches the endpoint and that the next turn goes upstream
      materially smaller than the conversation held locally. Run twice: once
@@ -94,24 +95,27 @@ def resolution_cases(root):
          {"ANTHROPIC_BASE_URL": "http://127.0.0.1:5588"}, {},
          {"upstream": ANTHROPIC, "summarizer": ANTHROPIC, "native": True, "fallback": False}),
 
-        ("custom endpoint chained by the hook reaches the summarizer",
-         {"ANTHROPIC_BASE_URL": "http://127.0.0.1:5588",
-          "ROLLING_CONTEXT_UPSTREAM": CUSTOM}, {},
+        # The hook carries preferences "upstream" to the proxy as this env var.
+        ("custom endpoint set by the hook reaches the summarizer",
+         {"ANTHROPIC_BASE_URL": "http://127.0.0.1:5588"},
+         {"ROLLING_CONTEXT_UPSTREAM": CUSTOM},
          {"upstream": CUSTOM, "summarizer": CUSTOM, "native": True, "fallback": True}),
 
-        ("bare custom ANTHROPIC_BASE_URL is picked up",
+        # One source: a route in settings.json is the install guard's business,
+        # never the proxy's (2026-11-03). Proxy and summarizer still agree.
+        ("a custom ANTHROPIC_BASE_URL in settings is NOT an upstream source",
          {"ANTHROPIC_BASE_URL": CUSTOM}, {},
-         {"upstream": CUSTOM, "summarizer": CUSTOM, "native": True, "fallback": True}),
+         {"upstream": ANTHROPIC, "summarizer": ANTHROPIC, "native": True, "fallback": False}),
 
-        ("env var still wins over settings.json",
+        ("env var wins; settings.json is not read for the route",
          {"ROLLING_CONTEXT_UPSTREAM": "https://from-settings.example"},
          {"ROLLING_CONTEXT_UPSTREAM": "https://from-env.example"},
          {"upstream": "https://from-env.example", "summarizer": "https://from-env.example",
           "native": True, "fallback": True}),
 
         ("explicit summarizer override still disables native mode",
-         {"ROLLING_CONTEXT_UPSTREAM": CUSTOM},
-         {"ROLLING_CONTEXT_SUMMARIZER_URL": ANTHROPIC},
+         {}, {"ROLLING_CONTEXT_UPSTREAM": CUSTOM,
+              "ROLLING_CONTEXT_SUMMARIZER_URL": ANTHROPIC},
          {"upstream": CUSTOM, "summarizer": ANTHROPIC, "native": False, "fallback": False}),
     ]
 
@@ -162,9 +166,9 @@ def live_case(root, strict):
     log = os.path.join(work, "mock.jsonl")
     os.makedirs(work, exist_ok=True)
 
-    home = fake_home(work, {"ANTHROPIC_BASE_URL": f"http://127.0.0.1:{proxy_port}",
-                            "ROLLING_CONTEXT_UPSTREAM": f"http://127.0.0.1:{mock_port}"})
+    home = fake_home(work, {"ANTHROPIC_BASE_URL": f"http://127.0.0.1:{proxy_port}"})
     env = clean_env(home, ROLLING_CONTEXT_PORT=str(proxy_port),
+                    ROLLING_CONTEXT_UPSTREAM=f"http://127.0.0.1:{mock_port}",
                     ROLLING_CONTEXT_TRIGGER="1000", ROLLING_CONTEXT_TARGET="400")
 
     mock = subprocess.Popen([sys.executable, MOCK, str(mock_port), log],

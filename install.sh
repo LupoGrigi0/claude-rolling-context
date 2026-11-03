@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Install Ferry (rolling context, curation=ferry) for ONE mind.
+# Install Ferry (rolling context, curation=ferry) for ONE mind, AS THAT USER.
 #
-# Config: ~/preferences.json "ferry" block, env vars overriding -- see
+# Config: ~/preferences.json "ferry" block, the ONE source -- see
 # hooks/ferry_config.py. A port is REQUIRED; there is no shared default.
 # Honours CLAUDE_CONFIG_DIR for settings.json and the plugin link.
+# No root, no service manager: Claude Code's SessionStart hook starts the proxy.
 #
 # Pure stdlib — no pip install needed. Just requires Python 3.7+.
 
@@ -26,11 +27,11 @@ fi
 echo "  Found $($PY_CMD --version 2>&1) (pure stdlib — no pip install needed)"
 CONF="$PY_CMD $SCRIPT_DIR/hooks/ferry_config.py"
 
-# 2. Resolve config from the one declared source and persist it. `install`
-# runs BEFORE the eval below: it ranks each value by where it came from, and
-# our own exports would otherwise read back to it as env overrides.
-echo "[2/4] Resolving Ferry config..."
-$CONF install || exit 1
+# 2. Resolve config from the one declared source. Refuses (writes nothing) with
+# no port, or if settings.json already routes this mind away from Anthropic and
+# preferences.json does not name ferry "upstream".
+echo "[2/4] Resolving Ferry config (~/preferences.json \"ferry\")..."
+$CONF install || { echo "  Install NOT complete."; exit 1; }
 CONFIG_OUT=$($CONF env)     # set -e: a resolver that crashed stops the install
 eval "$CONFIG_OUT"
 CLAUDE_DIR="$FERRY_CONFIG_DIR"
@@ -57,25 +58,16 @@ esac
 # 4. Start + verify the proxy, through the ONE launcher (the SessionStart hook).
 # It points ANTHROPIC_BASE_URL at the port only after its own pid holds it.
 echo "[4/4] Starting proxy on port $ROLLING_CONTEXT_PORT..."
-if [ "$FERRY_SUPERVISED" = 1 ]; then
-    # The supervisor launches from the same config, so the port is declared,
-    # not guessed. Point only once the canary proves THIS mind's proxy is on it.
-    echo "  Supervised: not starting a proxy here."
-    $PY_CMD "$SCRIPT_DIR/tools/ferry-canary" --wait 10 \
-        || { echo "  Supervised proxy not proven (above); settings.json NOT pointed. Install NOT complete."; exit 1; }
-    echo "  ANTHROPIC_BASE_URL: $($CONF point)"
-else
-    bash "$SCRIPT_DIR/hooks/start-proxy.sh" || { echo "  Install NOT complete."; exit 1; }
-    echo "  Proxy verified on port $ROLLING_CONTEXT_PORT; ANTHROPIC_BASE_URL points at it."
-fi
+bash "$SCRIPT_DIR/hooks/start-proxy.sh" || { echo "  Install NOT complete."; exit 1; }
+echo "  Proxy verified on port $ROLLING_CONTEXT_PORT; ANTHROPIC_BASE_URL points at it."
 
 echo ""
 echo "=== Installation Complete ==="
 echo ""
 echo "  ROLLING_CONTEXT_PORT     = $ROLLING_CONTEXT_PORT"
-echo "  ROLLING_CONTEXT_CURATION = $ROLLING_CONTEXT_CURATION"
+echo "  ROLLING_CONTEXT_UPSTREAM = $ROLLING_CONTEXT_UPSTREAM"
 echo "  FERRY_DATA               = $FERRY_DATA"
 echo "  settings.json            = $CLAUDE_DIR/settings.json"
 echo ""
-echo "To start it manually: bash $SCRIPT_DIR/hooks/start-proxy.sh"
+echo "Prove it once:  python3 $SCRIPT_DIR/tools/ferry-canary"
 echo "Start a new Claude Code session to route through Ferry."

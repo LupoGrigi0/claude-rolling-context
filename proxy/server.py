@@ -36,8 +36,8 @@ except Exception:                                   # pragma: no cover
     metrics = None
 from compressor import RollingCompressor
 
-# The debug log ROTATES (ship item S9). It is DEBUG-level and a supervised proxy
-# runs for weeks; an unbounded file in a mind's home is a disk-full waiting for
+# The debug log ROTATES (ship item S9). It is DEBUG-level and a proxy can
+# run for weeks; an unbounded file in a mind's home is a disk-full waiting for
 # a date. 10 MB x 3 backups keeps the last few days of a busy mind, bounded.
 LOG_MAX_BYTES = 10 * 1024 * 1024
 LOG_BACKUPS = 3
@@ -82,8 +82,8 @@ def _log_filename():
         # syntax check runs the module rather than just parsing it.
         tag = str(getattr(endpoints, "LISTEN_PORT", "") or "")
     # ~/.claude as before; a CLAUDE_CONFIG_DIR mind may have none, and the
-    # handler below would then kill the proxy at import (a supervised unit
-    # restart-loops on it forever) -- so fall back to the config dir.
+    # handler below would then kill the proxy at import (and every restart
+    # would die the same way) -- so fall back to the config dir.
     base = os.path.join(os.path.expanduser("~"), ".claude")
     if not os.path.isdir(base):
         base = endpoints.config_dir()
@@ -107,7 +107,7 @@ log = logging.getLogger("rolling-context")
 
 LISTEN_PORT = endpoints.LISTEN_PORT
 
-UPSTREAM_URL = endpoints.load_upstream(LISTEN_PORT)
+UPSTREAM_URL = endpoints.load_upstream()
 TRIGGER_TOKENS = int(os.environ.get("ROLLING_CONTEXT_TRIGGER") or "100000")
 TARGET_TOKENS = int(os.environ.get("ROLLING_CONTEXT_TARGET") or "40000")
 
@@ -1646,6 +1646,10 @@ class ThreadedHTTPServer(HTTPServer):
 def main():
     from compressor import (NATIVE_MODE, NATIVE_FALLBACK, SUMMARIZER_BASE_URL,
                             SUMMARIZER_FORMAT)
+    if not LISTEN_PORT:
+        log.error("ROLLING_CONTEXT_PORT not set; start Ferry via hooks/start-proxy.sh "
+                  "(port comes from ~/preferences.json \"ferry\".\"port\")")
+        sys.exit(2)
     log.info(f"Starting Rolling Context Proxy on port {LISTEN_PORT}")
     log.info(f"  Trigger at: {TRIGGER_TOKENS:,} tokens")
     log.info(f"  Compress down to: {TARGET_TOKENS:,} tokens (recent context)")

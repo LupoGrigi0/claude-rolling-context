@@ -51,7 +51,7 @@ Claude Code re-sends the entire conversation on every turn. Even with caching wo
 ## How It Works
 
 ```
-Claude Code  ──►  Rolling Context Proxy (:5588)  ──►  Anthropic API
+Claude Code  ──►  Ferry (:ferry.port)  ──►  ferry.upstream (default Anthropic)
                          │
                          ├─ context < 100K tokens? pass through unchanged
                          │
@@ -78,53 +78,75 @@ Ferry is this fork: **https://github.com/LupoGrigi0/claude-rolling-context**.
 (Upstream NodeNestor's plugin installs plain rolling-context summarisation, not
 Ferry curation — do not use its marketplace entry for a Ferry mind.)
 
-One install per mind. Each mind needs **its own port** — there is no shared
-default; two minds on one port means one routes through the other's proxy.
+One install per mind, run **as that mind's unix user**. Ferry runs the way
+Claude Code runs: as the user, started by Claude Code's own SessionStart hook.
+No root, no service manager, nothing under `/etc`. Each mind needs **its own
+port** — there is no shared default; two minds on one port means one routes
+through the other's proxy.
 
-### Config: one declared source
+### Config: one source, in the home
 
-Put a `ferry` block in `~/preferences.json` (it may be read-only to the mind):
+A `ferry` block in `~/preferences.json` is the **only** config source. Ferry
+never writes this file.
 
 ```json
-{"ferry": {"port": 5701, "data_dir": "/home/me/ferry-data"}}
+{"ferry": {"port": 5701}}
 ```
 
-| Field | Env override | Default |
-|-------|--------------|---------|
-| `port` | `ROLLING_CONTEXT_PORT` | **none — required** |
-| `data_dir` | `FERRY_DATA` | `~/ferry-data` |
-| `curation` | `ROLLING_CONTEXT_CURATION` | `ferry` |
-| `upstream` | `ROLLING_CONTEXT_UPSTREAM` | resolved from settings / env |
-| `supervised` | `FERRY_SUPERVISED` | `false` |
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `port` | **none — required** | The proxy's loopback port, one per mind |
+| `upstream` | `https://api.anthropic.com` | Where the proxy forwards. The ONE route. |
+| `data_dir` | `~/ferry-data` | The mind's archive |
 
-Env vars override the file. Settings are read from and written to
-`$CLAUDE_CONFIG_DIR/settings.json` (else `~/.claude/settings.json`).
-`hooks/ferry_config.py` is the only resolver; installer, hook and uninstaller
-all call it.
+Curation mode is always `ferry`. Env vars and `settings.json` are **not** config
+sources; the hook only uses env vars to hand these values to the proxy it starts.
+The **model** is not Ferry's business: whatever model the client names rides in
+each request, untouched — switch models freely.
 
-**`supervised: true`** means a supervisor (e.g. the `hacs-ferry@$USER` unit)
-owns the proxy. The SessionStart hook then starts nothing and writes nothing —
-exactly one launcher per mind.
+Ferry writes exactly one thing into Claude Code's settings
+(`$CLAUDE_CONFIG_DIR/settings.json`, else `~/.claude/settings.json`):
+`ANTHROPIC_BASE_URL=http://127.0.0.1:<port>`, plus a marker
+(`ROLLING_CONTEXT_WROTE_BASE_URL`) so uninstall removes only what Ferry wrote.
+
+**Not on Anthropic?** If `settings.json` already routes the mind elsewhere (a
+non-Anthropic `ANTHROPIC_BASE_URL` — in `settings.json` or the launcher env —
+an `apiKeyHelper`, or an `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY`) and `ferry.upstream`
+is not declared, install refuses and prints the exact value to add — otherwise
+that mind's key would be forwarded to Anthropic.
 
 ### Linux / macOS
 
 ```bash
 git clone https://github.com/LupoGrigi0/claude-rolling-context.git ~/claude-rolling-context
 cd ~/claude-rolling-context
-ROLLING_CONTEXT_PORT=5701 bash install.sh    # or set "port" in ~/preferences.json
+# put {"ferry": {"port": 5701}} in ~/preferences.json first
+bash install.sh
+python3 tools/ferry-canary      # once: proves this mind reaches its own proxy
 ```
 
-The installer writes `ROLLING_CONTEXT_CURATION=ferry` and a per-mind
-`FERRY_DATA` (values `preferences.json` declares are left there, not copied),
-registers the plugin, then starts the proxy through the SessionStart hook. The
-hook **verifies its own process holds the port** before it points
-`ANTHROPIC_BASE_URL` at it, and fails loudly (settings untouched) if not. An
-existing `ANTHROPIC_BASE_URL` that Ferry did not write — remote or loopback —
-becomes `ROLLING_CONTEXT_UPSTREAM`. Start a new Claude Code session afterwards.
-Requires Python 3.7+ (pure stdlib).
+The installer registers the plugin and starts the proxy through the
+SessionStart hook. The hook reuses a proxy of this user already on the port, or
+starts one and **verifies its own process holds the port** before pointing
+`ANTHROPIC_BASE_URL` at it; if not, it fails loudly and takes back only a base
+URL Ferry wrote. Start a new Claude Code session afterwards. Requires Python
+3.7+ (pure stdlib).
 
-**Windows:** `install.ps1` has not yet been updated for per-mind ports and
-`preferences.json`; use the Linux path for Ferry minds for now.
+**Rollback:** remove Ferry's `ANTHROPIC_BASE_URL` from `settings.json` (or run
+`uninstall.sh`), restart the session. See `docs/RUNBOOK.md`.
+
+### Windows
+
+```powershell
+git clone https://github.com/LupoGrigi0/claude-rolling-context.git $HOME\claude-rolling-context
+cd $HOME\claude-rolling-context
+# put {"ferry": {"port": 5701}} in %USERPROFILE%\preferences.json first
+powershell -ExecutionPolicy Bypass -File install.ps1
+# then run the canary command install.ps1 prints, once
+```
+
+Same design, same `hooks/ferry_config.py`; needs Python 3.8+. **Ported, untested
+on a Windows machine as of 2026-11-03.**
 
 ## How Compression Works
 
@@ -187,10 +209,11 @@ export ROLLING_CONTEXT_MODEL=deepseek/deepseek-chat
 
 ### Non-Anthropic endpoints (GLM/Z.ai, DeepSeek, OpenRouter, a local gateway)
 
-Point Claude Code at your endpoint the usual way and install as normal. The hook
-chains it — `ANTHROPIC_BASE_URL` becomes the proxy, and your endpoint becomes
-`ROLLING_CONTEXT_UPSTREAM` — and **both** the chat traffic and the background
-compaction go there. No extra configuration.
+Declare the endpoint as `"upstream"` in the `ferry` block of
+`~/preferences.json` and install as normal. **Both** the chat traffic and the
+background compaction go there. If the mind's `settings.json` still names the
+endpoint as `ANTHROPIC_BASE_URL`, Ferry replaces it with its own URL, and
+uninstall puts the declared upstream back.
 
 Third-party endpoints implement the `/v1/messages` shape to varying depth. Native
 mode clones the request Claude Code just sent, which can include `cache_control`
@@ -300,8 +323,8 @@ All settings via environment variables (all optional — defaults work great):
 | `ROLLING_CONTEXT_TRIGGER` | `100000` | Compress when context exceeds this many tokens |
 | `ROLLING_CONTEXT_TARGET` | `40000` | Keep this many tokens of recent messages after compression |
 | `ROLLING_CONTEXT_MODEL` | *(session model)* | Summarizer model; unset = the session's own model (prompt-cache hit) |
-| `ROLLING_CONTEXT_PORT` | *(none — required, see Install)* | Proxy listen port, one per mind |
-| `ROLLING_CONTEXT_UPSTREAM` | `https://api.anthropic.com` | Upstream API URL (chain to another proxy!) |
+| `ROLLING_CONTEXT_PORT` | *(set by the hook from `ferry.port`)* | Proxy listen port, one per mind |
+| `ROLLING_CONTEXT_UPSTREAM` | *(set by the hook from `ferry.upstream`)* | Upstream API URL |
 | `ROLLING_CONTEXT_SUMMARIZER_URL` | *(upstream)* | Custom endpoint for summarization (local model, other API) |
 | `ROLLING_CONTEXT_SUMMARIZER_KEY` | *(uses Claude Code auth)* | API key for custom summarizer endpoint |
 | `ROLLING_CONTEXT_SUMMARIZER_FORMAT` | `anthropic` | `openai` = /v1/chat/completions for OpenAI-compatible endpoints |
@@ -311,23 +334,22 @@ All settings via environment variables (all optional — defaults work great):
 
 ## Proxy Chaining
 
-Already using another proxy (model router, API gateway, etc.)? Rolling Context auto-detects this and chains through it:
+Already using another proxy (model router, API gateway, etc.)? Declare it as
+`ferry.upstream` in `~/preferences.json`:
 
 ```
-Claude Code  ──►  Rolling Context (:5588)  ──►  Your Proxy  ──►  Anthropic API
+Claude Code  ──►  Ferry (:port)  ──►  Your Proxy  ──►  Anthropic API
 ```
 
-If `ANTHROPIC_BASE_URL` is already set when you install, the plugin automatically saves it as `ROLLING_CONTEXT_UPSTREAM` and inserts itself in front. No manual config needed.
-
-You can also set it explicitly:
-```bash
-export ROLLING_CONTEXT_UPSTREAM=http://localhost:8080  # your existing proxy
-```
+Ferry does not detect or copy routes out of `settings.json` — one source of truth.
+If it finds one there and `ferry.upstream` is not set, install refuses and says
+what to declare.
 
 ## Health Check
 
 ```bash
-curl http://127.0.0.1:5588/health
+python3 tools/ferry-canary          # proves THIS mind reaches ITS proxy
+curl http://127.0.0.1:<port>/health # <port> = ferry.port in ~/preferences.json
 ```
 
 Returns compression stats: how many compressions, tokens saved, etc.
@@ -335,7 +357,7 @@ Returns compression stats: how many compressions, tokens saved, etc.
 ## Debug
 
 ```bash
-curl http://127.0.0.1:5588/debug/compressions
+curl http://127.0.0.1:<port>/debug/compressions
 ```
 
 Returns the stored compression entries with their full summary content — useful for verifying what the rolling summary captured and whether user goals/instructions survived compression.

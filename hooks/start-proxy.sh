@@ -1,20 +1,18 @@
 #!/usr/bin/env bash
-# Ensure THIS mind's Ferry proxy is running, on THIS mind's port.
-# Pure stdlib — no venv needed, just python.
+# Ensure THIS mind's Ferry proxy is running, on THIS mind's port, AS THIS USER.
+# Claude Code's SessionStart hook runs it; install.sh runs it too. Pure stdlib.
 #
-# The only launcher: install.sh runs this too. Config comes from
-# hooks/ferry_config.py (~/preferences.json "ferry", env overriding).
-#   supervised  -> start nothing, write nothing; the supervisor owns the port.
-#   otherwise   -> start (or reuse) the proxy, then VERIFY that the pid we
-#                  launched holds the port. Only then point settings.json at it.
+# Config: ~/preferences.json "ferry" via hooks/ferry_config.py -- the only source.
+#   1. The declared port is already held by a server.py of this uid -> reuse it.
+#   2. Otherwise start one, and VERIFY the pid we launched holds the port.
+#   Only then point settings.json's ANTHROPIC_BASE_URL at it. On failure, take
+#   back a base URL Ferry wrote (never anyone else's) and fail loud.
 # A proxy that failed to bind because another mind's proxy is on the port must
 # never be mistaken for ours: that is mind #2 routing through mind #1's archive.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROXY_DIR="$SCRIPT_DIR/../proxy"
-CURRENT_VERSION=$(cat "$SCRIPT_DIR/../.claude-plugin/plugin.json" 2>/dev/null | grep '"version"' | head -1 | sed 's/.*"version".*"\(.*\)".*/\1/')
 
-# Detect Windows (git bash)
 if [[ "$(uname -s)" == MINGW* ]] || [[ "$(uname -s)" == MSYS* ]]; then
     IS_WINDOWS=true
 else
@@ -31,7 +29,7 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$HOOKLOG" 2>/dev/null
 }
 # Loud: the hook log, stdout (SessionStart adds it to the mind's context) and
-# stderr, then non-zero. settings.json is NOT touched on this path.
+# stderr, then non-zero.
 fail() {
     log "ERROR: $1"
     echo "[FERRY] ERROR: $1"
@@ -47,27 +45,25 @@ fail_withdraw() {
     fail "$1 settings.json: ${w:-no Ferry pointer to withdraw}"
 }
 
+# The exports below are the TRANSPORT to the proxy we start; they replace
+# whatever the parent process carried (e.g. settings.json env Claude Code injected).
 CONFIG_OUT=$($CONF env) || fail "ferry_config.py failed to run"
 eval "$CONFIG_OUT"
-[ -n "$FERRY_CONFIG_ERROR" ] && fail "$FERRY_CONFIG_ERROR"
+# A config error must not leave an earlier run's pointer aimed at a port no
+# proxy will hold: take it back (only if Ferry wrote it).
+[ -n "$FERRY_CONFIG_ERROR" ] && fail_withdraw "$FERRY_CONFIG_ERROR"
 
 CLAUDE_DIR="$FERRY_CONFIG_DIR"
 mkdir -p "$CLAUDE_DIR"
 HOOKLOG="$CLAUDE_DIR/rolling-context-hook.log"
 PIDFILE="$CLAUDE_DIR/rolling-context-proxy.pid"
-VERFILE="$CLAUDE_DIR/rolling-context-proxy.version"
 PORT="$ROLLING_CONTEXT_PORT"
 
-log "Hook started. PROXY_DIR=$PROXY_DIR PORT=$PORT FERRY_DATA=$FERRY_DATA SUPERVISED=$FERRY_SUPERVISED"
-
-if [ "$FERRY_SUPERVISED" = 1 ]; then
-    log "Supervised: the supervisor owns port $PORT. Not starting a proxy, not touching settings.json."
-    exit 0
-fi
+log "Hook started. PORT=$PORT UPSTREAM=$ROLLING_CONTEXT_UPSTREAM FERRY_DATA=$FERRY_DATA"
 
 point_settings() {
     local result
-    result=$($CONF point 2>&1) || fail "could not update $CLAUDE_DIR/settings.json: $result"
+    result=$($CONF point 2>&1) || fail "settings.json NOT pointed at port $PORT: $result"
     log "settings.json: $result (ANTHROPIC_BASE_URL=http://127.0.0.1:$PORT)"
 }
 
@@ -82,36 +78,25 @@ _kill_pid() {
     fi
 }
 
-# Alive AND still our proxy: a stale pidfile's pid may now be anything.
-_our_proxy_alive() {
-    local pid="$1"
-    if [ "$IS_WINDOWS" = true ]; then
-        powershell.exe -Command "if (Get-Process -Id $pid -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" 2>/dev/null
-    else
-        kill -0 "$pid" 2>/dev/null && $CONF is-proxy "$pid"
-    fi
-}
-
-if [ -f "$PIDFILE" ]; then
-    PID=$(cat "$PIDFILE")
-    if _our_proxy_alive "$PID"; then
-        RUNNING_VERSION=$(cat "$VERFILE" 2>/dev/null)
-        if [ "$CURRENT_VERSION" = "$RUNNING_VERSION" ]; then
-            $CONF holds-port "$PID" "$PORT" \
-                || fail_withdraw "proxy PID $PID is running but does NOT hold port $PORT (config changed? restart it)."
-            log "Proxy already running (PID $PID, v$RUNNING_VERSION, holds port $PORT)"
-            point_settings
-            exit 0
+# 1. Reuse: whoever of THIS uid holds the port (who-holds sees only our own
+# processes), else the pidfile's pid (no /proc, e.g. macOS) -- either way it
+# must be a server.py that holds the declared port.
+for CAND in $($CONF who-holds "$PORT" 2>/dev/null) $(cat "$PIDFILE" 2>/dev/null); do
+    if kill -0 "$CAND" 2>/dev/null && $CONF is-proxy "$CAND" && $CONF holds-port "$CAND" "$PORT"; then
+        # Ours -- but it keeps the upstream it was STARTED with. If preferences
+        # changed since, reusing it would make it a second source of the route.
+        if ! WHY=$($CONF proxy-matches "$PORT" 2>&1); then
+            fail_withdraw "proxy PID $CAND on port $PORT does not match ~/preferences.json: $WHY. Stop that PID (docs/RUNBOOK.md section 3) and start a new session."
         fi
-        log "Version changed ($RUNNING_VERSION -> $CURRENT_VERSION), restarting proxy (PID $PID)"
-        _kill_pid "$PID"
+        echo "$CAND" > "$PIDFILE"
+        log "Reusing proxy PID $CAND on port $PORT"
+        point_settings
+        exit 0
     fi
-    rm -f "$PIDFILE" "$VERFILE"
-fi
+done
+rm -f "$PIDFILE"
 
-# Start proxy directly — no venv needed (pure stdlib). The exported config
-# (ROLLING_CONTEXT_PORT, FERRY_DATA, ROLLING_CONTEXT_CURATION, ...) is its env.
-# exec, so $! is the python process itself and not a wrapper shell.
+# 2. Start one. exec, so $! is the python process itself and not a wrapper shell.
 log "Starting proxy on port $PORT..."
 # server.py puts its debug log in ~/.claude, which a CLAUDE_CONFIG_DIR mind may
 # not have -- the FileHandler then kills it at import. Keep it in the config dir.
@@ -123,8 +108,7 @@ PID=$!
 for _ in $(seq 60); do
     if $CONF holds-port "$PID" "$PORT"; then
         echo "$PID" > "$PIDFILE"
-        echo "$CURRENT_VERSION" > "$VERFILE"
-        log "Proxy started with PID $PID (v$CURRENT_VERSION), verified on port $PORT"
+        log "Proxy started with PID $PID, verified on port $PORT"
         point_settings
         exit 0
     fi

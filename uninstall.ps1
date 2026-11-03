@@ -1,128 +1,120 @@
-# Uninstall the Rolling Context plugin (Windows)
+# Uninstall the Rolling Context (Ferry) plugin for ONE mind. Windows twin of
+# uninstall.sh. Honours CLAUDE_CONFIG_DIR. Never touches FERRY_DATA (the
+# archive) and never writes preferences.json.
 #
 # Run: powershell -ExecutionPolicy Bypass -File uninstall.ps1
 
-$ErrorActionPreference = "SilentlyContinue"
+$ErrorActionPreference = 'Continue'
 
-$ClaudeDir = Join-Path $env:USERPROFILE ".claude"
-$PidFile = Join-Path $ClaudeDir "rolling-context-proxy.pid"
-$PluginLink = Join-Path $ClaudeDir "plugins\rolling-context"
-$MarketplaceCache = Join-Path $ClaudeDir "plugins\cache\rolling-context-marketplace"
-$MarketplaceDir = Join-Path $ClaudeDir "plugins\marketplaces\rolling-context-marketplace"
-$Port = if ($env:ROLLING_CONTEXT_PORT) { $env:ROLLING_CONTEXT_PORT } else { "5588" }
+$ScriptDir = $PSScriptRoot
+. (Join-Path $ScriptDir 'hooks\ferry_common.ps1')
 
-Write-Host "=== Uninstalling Rolling Context ==="
+$HavePy = Initialize-FerryPython
+$ClaudeDir = Get-FerryDefaultConfigDir
+$Port = 0
+if ($HavePy) {
+    # A config error (e.g. no port) is fine here: we only lose the port fallback.
+    $cfg = Get-FerryEnv
+    if ($cfg) {
+        $ClaudeDir = $cfg['FERRY_CONFIG_DIR']
+        if ($cfg['ROLLING_CONTEXT_PORT'] -match '^\d+$') { $Port = [int]$cfg['ROLLING_CONTEXT_PORT'] }
+    }
+}
+$PidFile = Join-Path $ClaudeDir 'rolling-context-proxy.pid'
+$PluginLink = Join-Path $ClaudeDir 'plugins\rolling-context'
+$MarketplaceCache = Join-Path $ClaudeDir 'plugins\cache\rolling-context-marketplace'
+$MarketplaceDir = Join-Path $ClaudeDir 'plugins\marketplaces\rolling-context-marketplace'
 
-# Stop proxy — try PID file first, then find by port
+Write-Host '=== Uninstalling Rolling Context ==='
+
+# Stop proxy -- PID file first, then whoever of OURS holds the port. Only ever
+# this user's server.py: a stale pidfile or a shared port may name something
+# else entirely (another mind's proxy, or an unrelated program).
 $stopped = $false
-if (Test-Path $PidFile) {
-    $proxyPid = Get-Content $PidFile
-    $proc = Get-Process -Id $proxyPid -ErrorAction SilentlyContinue
-    if ($proc) {
-        Stop-Process -Id $proxyPid -Force
-        Write-Host "Stopped proxy (PID $proxyPid)"
-        $stopped = $true
-    }
-    Remove-Item $PidFile -Force
-}
-Remove-Item (Join-Path $ClaudeDir "rolling-context-proxy.version") -Force -ErrorAction SilentlyContinue
-if (-not $stopped) {
-    $conns = Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue
-    if ($conns) {
-        $conns | ForEach-Object {
-            Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue
+if (Test-Path -LiteralPath $PidFile) {
+    $saved = "$(Get-Content -LiteralPath $PidFile -Raw)".Trim()
+    if ($saved -match '^\d+$') {
+        $info = Get-FerryProcess ([int]$saved)
+        if ($info -and (Test-FerrySameUser $info) -and (Test-FerryIsProxy $info)) {
+            Stop-Process -Id ([int]$saved) -Force -ErrorAction SilentlyContinue
+            Write-Host "Stopped proxy (PID $saved)"
+            $stopped = $true
         }
-        Write-Host "Stopped proxy on port $Port"
     }
 }
+if (-not $stopped -and $Port -gt 0) {
+    $holder = Get-FerryPortHolder $Port
+    if ($holder) {
+        $info = Get-FerryProcess $holder
+        if (Test-FerryIsProxy $info) {
+            Stop-Process -Id $holder -Force -ErrorAction SilentlyContinue
+            Write-Host "Stopped proxy on port $Port (PID $holder)"
+        }
+    }
+}
+Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $ClaudeDir 'rolling-context-proxy.version') -Force -ErrorAction SilentlyContinue
 
 # Remove all log files
-Remove-Item (Join-Path $ClaudeDir "rolling-context-proxy.log") -Force -ErrorAction SilentlyContinue
-Remove-Item (Join-Path $ClaudeDir "rolling-context-proxy.log.err") -Force -ErrorAction SilentlyContinue
-Remove-Item (Join-Path $ClaudeDir "rolling-context-debug.log") -Force -ErrorAction SilentlyContinue
-Remove-Item (Join-Path $ClaudeDir "rolling-context-hook.log") -Force -ErrorAction SilentlyContinue
-
-# Remove plugin link (manual install)
-if (Test-Path $PluginLink) {
-    Remove-Item $PluginLink -Recurse -Force
-    Write-Host "Removed plugin link"
+foreach ($f in @('rolling-context-proxy.log', 'rolling-context-proxy.log.err',
+                 'rolling-context-debug.log', 'rolling-context-hook.log')) {
+    Remove-Item -LiteralPath (Join-Path $ClaudeDir $f) -Force -ErrorAction SilentlyContinue
 }
 
-# Remove marketplace-installed plugin cache
-if (Test-Path $MarketplaceCache) {
-    Remove-Item $MarketplaceCache -Recurse -Force
-    Write-Host "Removed marketplace plugin cache"
-}
+# Remove plugin link (manual install) -- as a link, never following it into the repo
+if (Remove-FerryLink $PluginLink) { Write-Host 'Removed plugin link' }
 
-# Remove marketplace registration
-if (Test-Path $MarketplaceDir) {
-    Remove-Item $MarketplaceDir -Recurse -Force
-    Write-Host "Removed marketplace registration"
-}
-
-# Clean installed_plugins.json
-$InstalledFile = Join-Path $ClaudeDir "plugins\installed_plugins.json"
-if (Test-Path $InstalledFile) {
-    $json = Get-Content $InstalledFile -Raw | ConvertFrom-Json
-    if ($json.plugins.PSObject.Properties["rolling-context@rolling-context-marketplace"]) {
-        $json.plugins.PSObject.Properties.Remove("rolling-context@rolling-context-marketplace")
-        $json | ConvertTo-Json -Depth 10 | Set-Content $InstalledFile
-        Write-Host "Removed from installed plugins"
+# Remove the ferry-fetch shims install.ps1 wrote -- only if they are still ours,
+# for this repo
+$shim = Get-FerryShimPaths
+$fetch = Join-Path $ScriptDir 'bin\ferry-fetch'
+foreach ($p in @($shim.Cmd, $shim.Sh)) {
+    $text = Get-Content -LiteralPath $p -Raw -ErrorAction SilentlyContinue
+    if ($text -and $text.Contains("$($Script:FerryShimMarker) for $fetch")) {
+        Remove-Item -LiteralPath $p -Force
+        Write-Host "Removed $p"
     }
 }
 
-# Clean known_marketplaces.json
-$MarketplacesFile = Join-Path $ClaudeDir "plugins\known_marketplaces.json"
-if (Test-Path $MarketplacesFile) {
-    $json = Get-Content $MarketplacesFile -Raw | ConvertFrom-Json
-    if ($json.PSObject.Properties["rolling-context-marketplace"]) {
-        $json.PSObject.Properties.Remove("rolling-context-marketplace")
-        $json | ConvertTo-Json -Depth 10 | Set-Content $MarketplacesFile
-        Write-Host "Removed marketplace"
-    }
+# Remove marketplace-installed plugin cache / registration
+if (Test-Path -LiteralPath $MarketplaceCache) {
+    Remove-FerryLink $MarketplaceCache | Out-Null
+    Write-Host 'Removed marketplace plugin cache'
+}
+if (Test-Path -LiteralPath $MarketplaceDir) {
+    Remove-FerryLink $MarketplaceDir | Out-Null
+    Write-Host 'Removed marketplace registration'
 }
 
-# Clean ANTHROPIC_BASE_URL from Claude Code settings.json
-$SettingsFile = Join-Path $ClaudeDir "settings.json"
-if (Test-Path $SettingsFile) {
-    try {
-        $settings = Get-Content $SettingsFile -Raw | ConvertFrom-Json
-
-        if ($settings | Get-Member -Name "env" -MemberType NoteProperty) {
-            $existingUrl = $null
-            $upstream = $null
-            if ($settings.env | Get-Member -Name "ANTHROPIC_BASE_URL" -MemberType NoteProperty) {
-                $existingUrl = $settings.env.ANTHROPIC_BASE_URL
-            }
-            if ($settings.env | Get-Member -Name "ROLLING_CONTEXT_UPSTREAM" -MemberType NoteProperty) {
-                $upstream = $settings.env.ROLLING_CONTEXT_UPSTREAM
-            }
-
-            if ($existingUrl -and $existingUrl -match "127\.0\.0\.1") {
-                if ($upstream) {
-                    $settings.env.ANTHROPIC_BASE_URL = $upstream
-                    $settings.env.PSObject.Properties.Remove("ROLLING_CONTEXT_UPSTREAM")
-                    Write-Host "Restored ANTHROPIC_BASE_URL to $upstream"
-                } else {
-                    $settings.env.PSObject.Properties.Remove("ANTHROPIC_BASE_URL")
-                    Write-Host "Removed ANTHROPIC_BASE_URL"
-                }
-            } elseif ($upstream) {
-                $settings.env.PSObject.Properties.Remove("ROLLING_CONTEXT_UPSTREAM")
-            }
-
-            # Remove plugin config vars
-            $toRemove = $settings.env.PSObject.Properties | Where-Object { $_.Name -like "ROLLING_CONTEXT_*" } | ForEach-Object { $_.Name }
-            foreach ($key in $toRemove) {
-                $settings.env.PSObject.Properties.Remove($key)
-            }
-
-            $settings | ConvertTo-Json -Depth 10 | Set-Content $SettingsFile -Encoding UTF8
-        }
-    } catch {
-        Write-Host "WARNING: Could not clean settings.json: $_"
+# Clean installed_plugins.json / known_marketplaces.json with Python's json,
+# as uninstall.sh does (5.1's ConvertTo-Json rewrites what it does not touch).
+# One line, single quotes only: 5.1 mangles embedded double quotes and drops
+# empty-string arguments to native commands, hence '-' for "top level".
+$jsonDrop = "import json,sys; p,sub,k,msg=sys.argv[1:5]; d=json.load(open(p,encoding='utf-8')); t=d if sub=='-' else d.get(sub,{}); hit=isinstance(t,dict) and t.pop(k,None) is not None; hit and open(p,'w',encoding='utf-8').write(json.dumps(d,indent=2)); print(msg if hit else '')"
+if ($HavePy) {
+    $InstalledFile = Join-Path $ClaudeDir 'plugins\installed_plugins.json'
+    if (Test-Path -LiteralPath $InstalledFile) {
+        & $Script:FerryPy -c $jsonDrop $InstalledFile 'plugins' 'rolling-context@rolling-context-marketplace' 'Removed from installed plugins' |
+            Where-Object { $_ } | ForEach-Object { Write-Host $_ }
     }
+    $MarketplacesFile = Join-Path $ClaudeDir 'plugins\known_marketplaces.json'
+    if (Test-Path -LiteralPath $MarketplacesFile) {
+        & $Script:FerryPy -c $jsonDrop $MarketplacesFile '-' 'rolling-context-marketplace' 'Removed marketplace' |
+            Where-Object { $_ } | ForEach-Object { Write-Host $_ }
+    }
+
+    # Clean settings.json: ANTHROPIC_BASE_URL ONLY if Ferry wrote it (restoring
+    # the mind's own route from preferences "upstream", if declared), then
+    # Ferry's keys.
+    $r = Invoke-FerryConf @('unpoint')
+    $r.Output | ForEach-Object { Write-Host $_ }
+    if ($r.Code -ne 0) { Write-Host 'WARNING: settings.json NOT cleaned (see above).' }
+} else {
+    Write-Host 'WARNING: Python not found, so settings.json was NOT cleaned. By hand: remove'
+    Write-Host '  ANTHROPIC_BASE_URL (only if it is http://127.0.0.1:<your ferry port>) and every'
+    Write-Host "  ROLLING_CONTEXT_* key from the env block of $(Join-Path $ClaudeDir 'settings.json'),"
+    Write-Host '  then restart the session.'
 }
 
-Write-Host ""
-Write-Host "Uninstalled."
+Write-Host ''
+Write-Host 'Uninstalled.'

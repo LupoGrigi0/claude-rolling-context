@@ -1,111 +1,85 @@
-# Install the Rolling Context plugin for Claude Code (Windows)
+# Install Ferry (rolling context, curation=ferry) for ONE mind, AS THAT USER.
+# Windows twin of install.sh.
 #
 # Run: powershell -ExecutionPolicy Bypass -File install.ps1
+#
+# Config: %USERPROFILE%\preferences.json "ferry" block, the ONE source -- see
+# hooks/ferry_config.py. A port is REQUIRED; there is no shared default:
+#     {"ferry": {"port": 5701}}
+# Honours CLAUDE_CONFIG_DIR for settings.json and the plugin link.
+# No admin, no service: Claude Code's SessionStart hook starts the proxy.
+# Requires Python 3.8+ (pure stdlib, no pip install).
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = 'Stop'
 
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$ProxyDir = Join-Path $ScriptDir "proxy"
-$Port = if ($env:ROLLING_CONTEXT_PORT) { $env:ROLLING_CONTEXT_PORT } else { "5588" }
-$ClaudeDir = Join-Path $env:USERPROFILE ".claude"
+$ScriptDir = $PSScriptRoot
+. (Join-Path $ScriptDir 'hooks\ferry_common.ps1')
 
-Write-Host "=== Rolling Context Proxy Installer (Windows) ==="
-Write-Host ""
+Write-Host '=== Ferry Installer (Windows) ==='
+Write-Host ''
 
-# 1. Check Python is available
-Write-Host "[1/3] Checking Python..."
-try {
-    $pyVersion = python --version 2>&1
-    Write-Host "  Found $pyVersion (pure stdlib — no pip install needed)"
-} catch {
-    Write-Host "  ERROR: Python not found. Install Python 3.7+ and try again."
+# 1. Python
+Write-Host '[1/4] Checking Python...'
+if (-not (Initialize-FerryPython)) {
+    Write-Host '  ERROR: Python 3.8+ not found (tried: py -3, python, python3). Install it and try again.'
     exit 1
 }
+Write-Host "  Found $($Script:FerryPy) (pure stdlib, no pip install needed)"
 
-# 2. Configure ANTHROPIC_BASE_URL in Claude Code settings.json
-Write-Host "[2/3] Configuring Claude Code settings.json..."
-$ProxyUrl = "http://127.0.0.1:$Port"
-$SettingsFile = Join-Path $ClaudeDir "settings.json"
-if (-not (Test-Path $ClaudeDir)) {
-    New-Item -ItemType Directory -Path $ClaudeDir -Force | Out-Null
-}
+# 2. Resolve config from the one declared source. Refuses (writes nothing) with
+# no port, or if settings.json already routes this mind away from Anthropic and
+# preferences.json does not name ferry "upstream".
+Write-Host '[2/4] Resolving Ferry config (~\preferences.json "ferry")...'
+$r = Invoke-FerryConf @('install')
+$r.Output | ForEach-Object { Write-Host $_ }
+if ($r.Code -ne 0) { Write-Host '  Install NOT complete.'; exit 1 }
+$cfg = Get-FerryEnv
+if ($null -eq $cfg) { Write-Host '  ERROR: ferry_config.py env failed. Install NOT complete.'; exit 1 }
+$ClaudeDir = $cfg['FERRY_CONFIG_DIR']
 
-try {
-    if (Test-Path $SettingsFile) {
-        $settings = Get-Content $SettingsFile -Raw | ConvertFrom-Json
-    } else {
-        $settings = [PSCustomObject]@{}
-    }
-
-    if (-not ($settings | Get-Member -Name "env" -MemberType NoteProperty)) {
-        $settings | Add-Member -NotePropertyName "env" -NotePropertyValue ([PSCustomObject]@{})
-    }
-
-    $existingUrl = $null
-    if ($settings.env | Get-Member -Name "ANTHROPIC_BASE_URL" -MemberType NoteProperty) {
-        $existingUrl = $settings.env.ANTHROPIC_BASE_URL
-    }
-
-    if (-not $existingUrl) {
-        $settings.env | Add-Member -NotePropertyName "ANTHROPIC_BASE_URL" -NotePropertyValue $ProxyUrl -Force
-        Write-Host "  Set ANTHROPIC_BASE_URL=$ProxyUrl"
-    } elseif ($existingUrl -notmatch "127\.0\.0\.1.*$Port") {
-        $settings.env | Add-Member -NotePropertyName "ROLLING_CONTEXT_UPSTREAM" -NotePropertyValue $existingUrl -Force
-        $settings.env | Add-Member -NotePropertyName "ANTHROPIC_BASE_URL" -NotePropertyValue $ProxyUrl -Force
-        Write-Host "  Chaining: ANTHROPIC_BASE_URL=$ProxyUrl -> upstream=$existingUrl"
-    } else {
-        Write-Host "  ANTHROPIC_BASE_URL already set"
-    }
-
-    # Set plugin config defaults (only if not already present)
-    $defaults = @{
-        "ROLLING_CONTEXT_PORT"    = "5588"
-        "ROLLING_CONTEXT_TRIGGER" = "100000"
-        "ROLLING_CONTEXT_TARGET"  = "40000"
-    }
-    foreach ($key in $defaults.Keys) {
-        if (-not ($settings.env | Get-Member -Name $key -MemberType NoteProperty)) {
-            $settings.env | Add-Member -NotePropertyName $key -NotePropertyValue $defaults[$key]
-        }
-    }
-    # Unset ROLLING_CONTEXT_MODEL = compress with the session's own model
-    # (prompt-cache hit). Migrate away the old seeded haiku default.
-    if (($settings.env | Get-Member -Name "ROLLING_CONTEXT_MODEL" -MemberType NoteProperty) -and
-        $settings.env.ROLLING_CONTEXT_MODEL -eq "claude-haiku-4-5-20251001") {
-        $settings.env.PSObject.Properties.Remove("ROLLING_CONTEXT_MODEL")
-    }
-
-    $settings | ConvertTo-Json -Depth 10 | Set-Content $SettingsFile -Encoding UTF8
-    Write-Host "  Settings written to $SettingsFile"
-} catch {
-    Write-Host "  ERROR: Could not update settings.json: $_"
-    exit 1
-}
-
-# 3. Register plugin
-Write-Host "[3/3] Registering Claude Code plugin..."
-$PluginsDir = Join-Path $ClaudeDir "plugins"
-$PluginLink = Join-Path $PluginsDir "rolling-context"
-if (-not (Test-Path $PluginsDir)) {
-    New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null
-}
-if (Test-Path $PluginLink) {
-    Remove-Item $PluginLink -Recurse -Force
-}
-cmd /c mklink /J "$PluginLink" "$ScriptDir" | Out-Null
+# 3. Register plugin (a junction: no admin or Developer Mode needed)
+Write-Host '[3/4] Registering Claude Code plugin...'
+$PluginsDir = Join-Path $ClaudeDir 'plugins'
+$PluginLink = Join-Path $PluginsDir 'rolling-context'
+New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null
+Remove-FerryLink $PluginLink | Out-Null
+New-Item -ItemType Junction -Path $PluginLink -Value $ScriptDir | Out-Null
 Write-Host "  Plugin linked at $PluginLink"
 
-Write-Host ""
-Write-Host "=== Installation Complete ==="
-Write-Host ""
-Write-Host "The proxy will auto-start when you launch Claude Code."
-Write-Host "To start it manually: cd $ProxyDir && python server.py"
-Write-Host ""
-Write-Host "Configuration (via environment variables):"
-Write-Host "  ROLLING_CONTEXT_PORT    = $Port"
-$trigger = if ($env:ROLLING_CONTEXT_TRIGGER) { $env:ROLLING_CONTEXT_TRIGGER } else { "80000" }
-$target = if ($env:ROLLING_CONTEXT_TARGET) { $env:ROLLING_CONTEXT_TARGET } else { "40000" }
-Write-Host "  ROLLING_CONTEXT_TRIGGER = $trigger tokens"
-Write-Host "  ROLLING_CONTEXT_TARGET  = $target tokens"
-Write-Host ""
-Write-Host "Start a new Claude Code session to activate the proxy."
+# Every curated prefix tells the mind to run a bare `ferry-fetch`. Two shims in
+# ~\.local\bin: .cmd for cmd/PowerShell, extensionless sh for Git Bash (which
+# is what Claude Code's Bash tool runs on Windows).
+$shim = Get-FerryShimPaths
+New-Item -ItemType Directory -Path $shim.Dir -Force | Out-Null
+$fetch = Join-Path $ScriptDir 'bin\ferry-fetch'
+$cmdText = "@echo off`r`nrem $($Script:FerryShimMarker) for $fetch`r`n`"$($Script:FerryPy)`" `"$fetch`" %*`r`n"
+[IO.File]::WriteAllText($shim.Cmd, $cmdText, (New-Object Text.ASCIIEncoding))
+$shQuote = { param($s) "'" + ($s -replace '\\', '/' -replace "'", "'\''") + "'" }
+$shText = "#!/bin/sh`n# $($Script:FerryShimMarker) for $fetch`nexec $(& $shQuote $Script:FerryPy) $(& $shQuote $fetch) `"`$@`"`n"
+[IO.File]::WriteAllText($shim.Sh, $shText, (New-Object Text.UTF8Encoding $false))
+Write-Host "  ferry-fetch shims written to $($shim.Dir)"
+$onPath = @($env:PATH -split ';' | ForEach-Object { $_.TrimEnd('\') }) -contains $shim.Dir.TrimEnd('\')
+if (-not $onPath) {
+    Write-Host "  WARNING: $($shim.Dir) is not on PATH -- add it (and to Git Bash's PATH),"
+    Write-Host "           or the mind's ferry-fetch (named in every curated prefix) is 'command not found'."
+}
+
+# 4. Start + verify the proxy, through the ONE launcher (the SessionStart hook),
+# in a child PowerShell so its exit and env changes stay its own. It points
+# ANTHROPIC_BASE_URL at the port only after its own process holds it.
+Write-Host "[4/4] Starting proxy on port $($cfg['ROLLING_CONTEXT_PORT'])..."
+$psExe = (Get-Process -Id $PID).Path
+& $psExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ScriptDir 'hooks\start-proxy.ps1')
+if ($LASTEXITCODE -ne 0) { Write-Host '  Install NOT complete.'; exit 1 }
+Write-Host "  Proxy verified on port $($cfg['ROLLING_CONTEXT_PORT']); ANTHROPIC_BASE_URL points at it."
+
+Write-Host ''
+Write-Host '=== Installation Complete ==='
+Write-Host ''
+Write-Host "  ROLLING_CONTEXT_PORT     = $($cfg['ROLLING_CONTEXT_PORT'])"
+Write-Host "  ROLLING_CONTEXT_UPSTREAM = $($cfg['ROLLING_CONTEXT_UPSTREAM'])"
+Write-Host "  FERRY_DATA               = $($cfg['FERRY_DATA'])"
+Write-Host "  settings.json            = $(Join-Path $ClaudeDir 'settings.json')"
+Write-Host ''
+Write-Host "Prove it once:  `"$($Script:FerryPy)`" `"$(Join-Path $ScriptDir 'tools\ferry-canary')`""
+Write-Host 'Start a new Claude Code session to route through Ferry.'

@@ -338,16 +338,11 @@ if [ "$FIRST_RUN" = 1 ]; then
 fi
 
 if [ -n "$say" ]; then
-  python3 - "$PORT" "$say" <<'PY'
-import json,sys,urllib.request
-port,body = sys.argv[1], sys.argv[2]
-text = "[ferry-watch]" + body + "\n\n(Automated. Nothing needs doing unless it looks wrong.)"
-req = urllib.request.Request(f"http://127.0.0.1:{port}/direct-message",
-    data=json.dumps({"from":"ferry-watch","text":text,"thread_id":"ferry-watch"}).encode(),
-    headers={"Content-Type":"application/json"}, method="POST")
-try: urllib.request.urlopen(req, timeout=10)
-except Exception as e: print(f"watch: send failed {e}", file=sys.stderr)
-PY
+  # v2 (2026-11-03): HACS mail to myself; the doorbell rings. The 21000 POST
+  # was accepted (202) and never delivered to the v2 session — see heartbeat.sh.
+  printf '%s\n\n(Automated. Nothing needs doing unless it looks wrong.)\n' "$say" \
+    | /usr/local/bin/hacs send Crossing-2d23 "[ferry-watch] $(date -u +%FT%TZ)" - >/dev/null \
+    || echo "watch: hacs send failed" >&2
   echo "__spoke $NOW" >> "$STATE.new"
 else
   grep '^__spoke ' "$STATE" 2>/dev/null >> "$STATE.new"

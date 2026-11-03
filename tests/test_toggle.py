@@ -229,9 +229,11 @@ def requests_from(log):
 
 def start_stack(work, switch_home, mock_port, proxy_port, log):
     os.makedirs(work, exist_ok=True)
-    home = fake_home(work, {"ANTHROPIC_BASE_URL": f"http://127.0.0.1:{proxy_port}",
-                            "ROLLING_CONTEXT_UPSTREAM": f"http://127.0.0.1:{mock_port}"})
+    # The upstream reaches the proxy as env (the hook's transport); settings.json
+    # is not an upstream source (2026-11-03, one route, one source).
+    home = fake_home(work, {"ANTHROPIC_BASE_URL": f"http://127.0.0.1:{proxy_port}"})
     env = clean_env(home, ROLLING_CONTEXT_PORT=str(proxy_port),
+                    ROLLING_CONTEXT_UPSTREAM=f"http://127.0.0.1:{mock_port}",
                     ROLLING_CONTEXT_HOME=switch_home,
                     ROLLING_CONTEXT_TRIGGER="1000", ROLLING_CONTEXT_TARGET="400")
     mock = subprocess.Popen([sys.executable, MOCK, str(mock_port), log],

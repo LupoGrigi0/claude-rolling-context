@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""ferry-canary (S6), the lockout surface (S7), debug-log rotation (S9), and the
-hacs-ferry@ unit draft (S5) -- each at BOTH polarities.
+"""ferry-canary (S6), the lockout surface (S7) and debug-log rotation (S9) --
+each at BOTH polarities. The canary is a MANUAL tool (no unit, no timer, no
+--pid): a human runs it once at install, as the mind's user.
 
 A canary that has never failed is not a canary: every OK below has a planted
 wrong world next to it (nothing listening, not Ferry, another mind's proxy,
@@ -8,7 +9,7 @@ upstream dead, curation locked out, config unreadable) that must NOT be OK.
 
 Everything binds port 0. The proxy runs IN-PROCESS on an OS-chosen port, in
 front of a stub upstream on another; no live proxy and no real API is touched.
-The canary itself runs as a subprocess, exactly as the unit would run it.
+The canary itself runs as a subprocess, exactly as a human would run it.
 
 Run: python3 tests/test_ferry_canary.py
 """
@@ -20,7 +21,6 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 CANARY = REPO / "tools" / "ferry-canary"
-UNIT = REPO / "deploy" / "hacs-ferry@.service"
 FORBIDDEN = [(5588, 5588), (5610, 5613), (21000, 21005), (21097, 21097),
              (21099, 21099), (22000, 22999)]
 
@@ -128,23 +128,27 @@ try:
     check("upstream unreachable -> exit 1", code, 1)
     check("upstream unreachable -> 'HTTP 502'", "HTTP 502" in out, True)
 
-    # COULD-NOT-LOOK: no flags, and the declared config has no port.
+    # COULD-NOT-LOOK: no flags, and no ~/preferences.json declares a port.
+    prefs = os.path.join(home, "preferences.json")
     cfg_env = {k: v for k, v in os.environ.items() if k != "ROLLING_CONTEXT_PORT"}
     code, out = canary(env=cfg_env)
     check("config without a port -> exit 2 (COULD-NOT-LOOK)", code, 2)
     check("COULD-NOT-LOOK is labelled", "COULD-NOT-LOOK" in out, True)
 
-    # ...and the same resolver, given a port, finds the proxy with no flags.
+    # The env is NOT a config source: a port only in the env is still no config.
     code, out = canary(env=dict(os.environ, ROLLING_CONTEXT_PORT=str(proxy_port)))
-    check("config-resolved port + data dir -> exit 0", code, 0)
+    check("port in the env only (no preferences) -> exit 2, env is not config", code, 2)
 
-    # --pid: the unit's $MAINPID must be the holder, not a same-mind proxy
-    # launched elsewhere. The proxy runs in THIS process, so getpid() holds it.
+    # ...and the same resolver, given preferences.json, finds the proxy with no flags.
+    with open(prefs, "w") as f:
+        json.dump({"ferry": {"port": proxy_port, "data_dir": data}}, f)
+    code, out = canary(env=cfg_env)
+    check("preferences-declared port + data dir -> exit 0", code, 0)
+    os.remove(prefs)
+
+    # --pid (the systemd unit's $MAINPID coupling) is gone.
     code, out = canary("--port", str(proxy_port), "--data", data, "--pid", str(os.getpid()))
-    check("--pid of the process holding the port -> exit 0", code, 0)
-    code, out = canary("--port", str(proxy_port), "--data", data, "--pid", str(os.getppid()))
-    check("--pid of a process NOT holding the port -> exit 1", code, 1)
-    check("--pid mismatch -> says 'NOT held by PID'", "NOT held by PID" in out, True)
+    check("--pid is no longer an option -> argparse error (exit 2)", code, 2)
 
     # ---- S7: lockout is ERROR, reported by /health, and fails the canary ---
     class Cap(logging.Handler):
@@ -195,24 +199,11 @@ try:
     check("the live log stayed bounded",
           os.path.getsize(os.environ["ROLLING_CONTEXT_LOG"]) <= 400, True)
 
-    # ---- S5: the unit draft says what it must, and points at real files ----
-    unit = UNIT.read_text(encoding="utf-8")
-    check("unit runs as the instance user", "\nUser=%i\n" in unit, True)
-    check("unit restarts on failure", "\nRestart=on-failure\n" in unit, True)
-    check("unit declares FERRY_SUPERVISED=1",
-          "\nEnvironment=FERRY_SUPERVISED=1\n" in unit, True)
-    homes = re.findall(r"^Environment=FERRY_HOME=(\S+)$", unit, re.M)
-    check("the pinned checkout is ONE variable, set once", len(homes), 1)
-    check("ExecStartPost runs the canary",
-          bool(re.search(r"^ExecStartPost=.*tools/ferry-canary", unit, re.M)), True)
-    check("ExecStartPost pins the holder to the unit's own MAINPID",
-          bool(re.search(r"^ExecStartPost=.*ferry-canary.*--pid \$\{MAINPID\}", unit, re.M)), True)
-    for rel in ("hooks/ferry_config.py", "tools/ferry-canary"):
-        check(f"unit's {rel} exists in the repo",
-              rel in unit and (REPO / rel).exists(), True)
-    check("unit execs server.py from FERRY_HOME/proxy, which exists",
-          'cd "$$FERRY_HOME/proxy" && exec /usr/bin/python3 server.py' in unit
-          and (REPO / "proxy" / "server.py").exists(), True)
+    # ---- no service-manager coupling left in the tool -----------------------
+    src = CANARY.read_text(encoding="utf-8")
+    check("canary names no MAINPID / systemd / timer",
+          any(w in src for w in ("MAINPID", "systemd", "ExecStartPost", "timer")), False)
+    check("deploy/ (systemd units) is gone from the repo", (REPO / "deploy").exists(), False)
 finally:
     proxy.shutdown(); stub.shutdown()
     shutil.rmtree(work, ignore_errors=True)

@@ -1,5 +1,10 @@
 """Where the proxy sends traffic — resolved once, shared by every consumer.
 
+CURRENT CONTRACT (2026-11-03): load_upstream() is env ROLLING_CONTEXT_UPSTREAM,
+else DEFAULT_UPSTREAM. Nothing else. Everything below the next rule is HISTORY:
+why the old settings-walking resolver existed and what it measured. The scope
+scan and unroutable_scope() are kept as measured knowledge; nothing calls them.
+
 The start hook writes `ROLLING_CONTEXT_UPSTREAM` into `settings.json` but does
 not export it into this process, so reading only `os.environ` silently loses a
 custom endpoint. `server.py` worked around that (issue #3) while
@@ -65,7 +70,9 @@ from urllib.parse import urlparse
 
 DEFAULT_UPSTREAM = "https://api.anthropic.com"
 
-LISTEN_PORT = int(os.environ.get("ROLLING_CONTEXT_PORT") or "5588")
+# No default port: the hook always sets it from ~/preferences.json. 0 = unset,
+# and server.main() refuses to start (a shared 5588 routed minds through each other).
+LISTEN_PORT = int(os.environ.get("ROLLING_CONTEXT_PORT") or "0")
 
 
 def config_dir() -> str:
@@ -149,36 +156,17 @@ def unroutable_scope(listen_port: int = LISTEN_PORT, cwd: str = None):
     return None
 
 
-def load_upstream(listen_port: int = LISTEN_PORT, cwd: str = None) -> str:
-    """Resolve the upstream API endpoint.
+def load_upstream() -> str:
+    """Where the proxy forwards: ROLLING_CONTEXT_UPSTREAM, else DEFAULT_UPSTREAM.
 
-    Order, deliberately matching Claude Code rather than convenience:
-      1. ROLLING_CONTEXT_UPSTREAM — Ferry's own channel, env then user settings
-      2. the HIGHEST-precedence settings scope that sets ANTHROPIC_BASE_URL
-      3. the PROCESS env's ANTHROPIC_BASE_URL  <- case A's fix; was never read
-      4. DEFAULT_UPSTREAM
-    Never our own listen port, on ANY path, which would loop.
+    2026-11-03 (Lupo): ONE route, ONE source. The hook sets this variable from
+    ~/preferences.json "ferry"."upstream" when it starts the proxy. The proxy no
+    longer walks settings scopes or reads ANTHROPIC_BASE_URL to guess a route --
+    that was a second source of the same truth. The A/B/C cases above are now
+    handled at INSTALL: hooks/ferry_config.py refuses to point a mind whose
+    settings already route elsewhere until preferences names the upstream.
     """
-    up = os.environ.get("ROLLING_CONTEXT_UPSTREAM")
-    if up:
-        return up
-
-    up = settings_env().get("ROLLING_CONTEXT_UPSTREAM")
-    if up:
-        return up
-
-    for _scope, _path, base in scan_scopes(cwd):
-        if base and (urlparse(base).port or 0) != listen_port:
-            return base
-
-    # The launching client's env decides the backend when settings are silent.
-    # Reading it is case A's entire fix: a mind pointed at OpenRouter by its
-    # launcher used to resolve to Anthropic and send the key there.
-    base = os.environ.get("ANTHROPIC_BASE_URL", "")
-    if base and (urlparse(base).port or 0) != listen_port:
-        return base
-
-    return DEFAULT_UPSTREAM
+    return os.environ.get("ROLLING_CONTEXT_UPSTREAM") or DEFAULT_UPSTREAM
 
 
 def is_anthropic(url: str) -> bool:

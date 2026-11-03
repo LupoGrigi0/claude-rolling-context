@@ -2,13 +2,14 @@
 """ferry-canary -- prove THIS mind reaches ITS OWN Ferry proxy, and that the
 proxy can serve. Ship items S6 (canary) and S7 (lockout reaches a human).
 
+A MANUAL tool: a human runs it once, as the mind's user, after install (and
+when something looks wrong). Nothing runs it on a schedule and nothing gates a
+start on it.
+
     ferry-canary                 port + data dir from hooks/ferry_config.py
-                                 (~/preferences.json "ferry", env overriding --
-                                 the same resolver the hook and the unit use)
-    ferry-canary --port N --data DIR [--wait SECONDS] [--pid PID]
-                                 --pid: the port must be held by PID itself
-                                 (the unit passes $MAINPID: a same-mind proxy
-                                 from elsewhere answers identically otherwise)
+                                 (~/preferences.json "ferry" -- the same
+                                 resolver the hook uses)
+    ferry-canary --port N --data DIR [--wait SECONDS]
 
 Exit 0 ONLY on proof. Anything else is non-zero with one line saying why:
     0  OK            the proxy on the port echoed our nonce, names THIS mind's
@@ -28,8 +29,7 @@ proxy belonging to another mind on the same port names a different data dir.
 A 200 from "something on the port" proves neither (5613, 10-11: a restart came
 up looking healthy and unable to serve).
 
-Usable as the unit's ExecStartPost (use --wait: the proxy may not be listening
-yet) and from a timer. Stdlib only.
+Stdlib only.
 """
 import argparse
 import http.client
@@ -95,8 +95,6 @@ def main():
     ap.add_argument("--data", help="this mind's FERRY_DATA")
     ap.add_argument("--wait", type=float, default=0,
                     help="seconds to keep retrying a refused connection")
-    ap.add_argument("--pid", type=int,
-                    help="require that this PID is the one listening on the port")
     a = ap.parse_args()
     if a.port is None or a.data is None:
         port, data = resolve_config()
@@ -126,10 +124,6 @@ def main():
     if got_data != want_data:
         done(FAIL, f"the proxy on port {port} serves data dir {got_data!r}, "
                    f"not this mind's {want_data!r} -- another mind's proxy")
-    if a.pid is not None and subprocess.run(
-            [sys.executable, CONFIG, "holds-port", str(a.pid), str(port)]).returncode:
-        done(FAIL, f"port {port} answers as this mind's proxy but is NOT held by "
-                   f"PID {a.pid} -- some other launch of it (stop that one first)")
     try:
         health = json.loads(body)
     except ValueError:
