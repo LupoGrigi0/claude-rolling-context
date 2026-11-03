@@ -1,0 +1,22 @@
+#!/usr/bin/env python3
+"""ferry-fetch — the command every curated prefix tells the mind to run:
+
+    ferry-fetch 'archive_20260811.jsonl#L3'
+    ferry-fetch 'archive_20260811.jsonl#L3-L7'
+    ferry-fetch --json 'archive_20260811.jsonl#L3'
+
+Thin wrapper over core/fetch.py, so a clone carries its own recall verb.
+FERRY_DATA resolves exactly as the proxy resolves it: $FERRY_DATA, else
+~/ferry-data. The path is resolved through symlinks, so linking this file
+onto PATH (e.g. ~/.local/bin/ferry-fetch) still finds the repo's core/.
+"""
+import os
+import sys
+
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "core"))
+
+from fetch import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

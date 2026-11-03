@@ -19,16 +19,10 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "proxy"))
 # FERRY_CORE is the proxy's OWN configured seam (proxy/curation.py:_ferry_core_on_path).
 # This test used to hardcode Path.home()/"ferry"/"core" -- which passes on every box we
-# own and NOWHERE else. Lodestone-8ec9 measured it NO-VERDICT on a fresh clone, any OS:
-# `invariant` and `carrystore` are not in git ls-files. Honour the seam, then say so
-# loudly if the modules are absent -- never crash, and never silently pass.
-FERRY_CORE = Path(os.environ.get("FERRY_CORE") or (Path.home() / "ferry" / "core"))
-if not (FERRY_CORE / "invariant.py").exists():
-    print(f"SKIP(env): ferry core not found at {FERRY_CORE}. Set FERRY_CORE to the\n"
-          f"  directory holding invariant.py and carrystore.py. These modules are NOT\n"
-          f"  in this repo -- see tests/run_all.py ENV_BOUND.")
-    print("0 passed, 0 failed")
-    raise SystemExit(0)
+# own and NOWHERE else (Lodestone-8ec9 measured it NO-VERDICT on a fresh clone). Since
+# ship item S2 the core lives in this repo's core/, which is also the proxy's default,
+# so a missing module is now a real FAILURE, not an env skip.
+FERRY_CORE = Path(os.environ.get("FERRY_CORE") or (REPO / "core"))
 os.environ["FERRY_CORE"] = str(FERRY_CORE)
 os.environ["ROLLING_CONTEXT_CURATION"] = "ferry"
 
@@ -315,6 +309,161 @@ _comp = _c(target_tokens=100_000)
 _naive = 100_000 / (_mt + 100_000)
 _kept = _comp.compress(MESSAGES, auth_headers={}, real_token_count=_mt + 60_000)
 check("a target above the floor but tight still produces a result", _kept is not None)
+
+
+# ── S2: a carry that fails to render is LOUD (ERROR + counter + metrics note) ──
+# The old path logged WARNING and returned "": the identity block vanished from
+# the crossing and nothing a canary reads changed. Each failure case below has a
+# control that the SAME producer stays quiet when the carry is healthy or absent.
+print("\nloud carry failure (S2):")
+import csv  # noqa: E402
+import logging  # noqa: E402
+import shutil  # noqa: E402
+import curation as curation_mod  # noqa: E402
+
+
+class _Errors(logging.Handler):
+    def __init__(self):
+        super().__init__(logging.ERROR)
+        self.records = []
+
+    def emit(self, record):
+        self.records.append(record.getMessage())
+
+
+_errs = _Errors()
+logging.getLogger("rolling-context").addHandler(_errs)
+CARRY_HEADER_T = curation_mod.CARRY_HEADER
+# a prior curated prefix that DID carry a carry section -> a carry is expected now
+PRIOR = f"{CARRY_HEADER_T}\nold carry\n\n- [user] x → archive_20260101.jsonl#L1"
+
+
+def _fresh(name, carry_from=None):
+    d = tmp / name
+    p = FerryCurationProducer(data_dir=d)
+    if carry_from:
+        shutil.copy(carry_from, d / "carry.jsonl")
+    return d, p
+
+
+def _notes(d):
+    try:
+        with open(d / "metrics.csv", newline="") as f:
+            return [r["note"] for r in csv.DictReader(f) if r["event"] == "curation"]
+    except OSError:
+        return []
+
+
+# control 1: healthy carry, prior prefix carried one -> rendered, quiet
+_errs.records.clear()
+d_ok, p_ok = _fresh("s2-healthy", carry_from=data / "carry.jsonl")
+out = p_ok.produce(MESSAGES, 0, 3, existing_payload=PRIOR)
+check("control: healthy carry renders, 0 ERRORs, counter 0",
+      IDENTITY in out and not _errs.records and p_ok.carry_failures == 0,
+      (_errs.records, p_ok.carry_failures))
+check("control: healthy carry -> metrics note has no carry=FAILED",
+      _notes(d_ok) and not any("carry=FAILED" in n for n in _notes(d_ok)),
+      _notes(d_ok))
+
+# control 2: fresh mind, no carry file, no prior carry -> quiet (not a loss)
+_errs.records.clear()
+d_new, p_new = _fresh("s2-fresh")
+out = p_new.produce(MESSAGES, 0, 3, existing_payload="")
+check("control: no carry file and none before -> 0 ERRORs, counter 0",
+      not _errs.records and p_new.carry_failures == 0, _errs.records)
+
+# loud 1: carry file missing although the prior prefix carried one
+_errs.records.clear()
+d_miss, p_miss = _fresh("s2-missing")
+out = p_miss.produce(MESSAGES, 0, 3, existing_payload=PRIOR)
+check("missing carry (expected) -> ERROR logged naming the loss",
+      any("CARRY NOT RENDERED" in m and "missing" in m for m in _errs.records),
+      _errs.records)
+check("missing carry -> carry_failures == 1, proxy still returns a payload",
+      p_miss.carry_failures == 1 and curation_mod.INDEX_HEADER in out
+      and CARRY_HEADER_T not in out, (p_miss.carry_failures, out[:80]))
+check("missing carry -> metrics curation row note says carry=FAILED",
+      any("carry=FAILED" in n for n in _notes(d_miss)), _notes(d_miss))
+
+# loud 1b: the alarm must not go quiet after one cycle. Cycle 2 feeds cycle 1's
+# own output (which has no CARRY section) back as the prior prefix.
+_errs.records.clear()
+d_two, p_two = _fresh("s2-two-cycle", carry_from=data / "carry.jsonl")
+out1 = p_two.produce(MESSAGES, 0, 3, existing_payload="")
+(d_two / "carry.jsonl").unlink()
+out2 = p_two.produce(MESSAGES, 0, 3, existing_payload=out1)
+out3 = p_two.produce(MESSAGES, 0, 3, existing_payload=out2)
+check("missing carry stays LOUD on every later cycle (carry_failures == 2)",
+      p_two.carry_failures == 2 and len(_errs.records) == 2
+      and CARRY_HEADER_T not in out3, (p_two.carry_failures, _errs.records))
+
+# loud 1c: ...and after a restart (new producer, persisted prefix has no carry)
+_errs.records.clear()
+p_re = FerryCurationProducer(data_dir=d_two)
+p_re.produce(MESSAGES, 0, 3, existing_payload=out3)
+check("missing carry stays LOUD after a restart (fresh producer, same data dir)",
+      p_re.carry_failures == 1 and len(_errs.records) == 1, _errs.records)
+
+# loud 1d: carry file exists but renders nothing, while a carry was expected
+_errs.records.clear()
+d_empty, p_empty = _fresh("s2-empty")
+(d_empty / "carry.jsonl").write_text("")
+out = p_empty.produce(MESSAGES, 0, 3, existing_payload=PRIOR)
+check("empty carry (expected) -> ERROR 'rendered empty', counter 1",
+      any("rendered empty" in m for m in _errs.records)
+      and p_empty.carry_failures == 1 and CARRY_HEADER_T not in out,
+      (_errs.records, p_empty.carry_failures))
+
+# control 3: empty carry file on a fresh mind (nothing ever rendered) -> quiet
+_errs.records.clear()
+d_e0, p_e0 = _fresh("s2-empty-fresh")
+(d_e0 / "carry.jsonl").write_text("")
+p_e0.produce(MESSAGES, 0, 3, existing_payload="")
+check("control: empty carry file, none ever rendered -> 0 ERRORs, counter 0",
+      not _errs.records and p_e0.carry_failures == 0, _errs.records)
+
+# loud 2: materialize error (a corrupt carry log)
+_errs.records.clear()
+d_bad, p_bad = _fresh("s2-corrupt")
+(d_bad / "carry.jsonl").write_text("{not json\n")
+out = p_bad.produce(MESSAGES, 0, 3, existing_payload="")
+check("corrupt carry -> ERROR logged (materialize failed), counter 1, no crash",
+      any("materialize failed" in m for m in _errs.records)
+      and p_bad.carry_failures == 1 and curation_mod.INDEX_HEADER in out,
+      (_errs.records, p_bad.carry_failures))
+
+# loud 3: carrystore not importable (FERRY_CORE points at an empty dir)
+_errs.records.clear()
+_saved_path, _saved_mod = list(sys.path), sys.modules.pop("carrystore", None)
+_saved_core = os.environ.get("FERRY_CORE")
+empty_core = tmp / "empty-core"
+empty_core.mkdir()
+sys.path[:] = [p for p in sys.path
+               if not (Path(p) / "carrystore.py").exists()]
+os.environ["FERRY_CORE"] = str(empty_core)
+try:
+    d_imp, p_imp = _fresh("s2-import", carry_from=data / "carry.jsonl")
+    out = p_imp.produce(MESSAGES, 0, 3, existing_payload="")
+    check("carrystore not importable -> ERROR logged, counter 1, no crash",
+          any("not importable" in m for m in _errs.records)
+          and p_imp.carry_failures == 1 and curation_mod.INDEX_HEADER in out,
+          (_errs.records, p_imp.carry_failures))
+finally:
+    sys.path[:] = _saved_path
+    if _saved_mod is not None:
+        sys.modules["carrystore"] = _saved_mod
+    os.environ["FERRY_CORE"] = _saved_core
+
+# the default: FERRY_CORE unset -> the repo's own core/ goes on sys.path
+_saved_path = list(sys.path)
+os.environ.pop("FERRY_CORE", None)
+sys.path[:] = [p for p in sys.path if Path(p).resolve() != (REPO / "core").resolve()]
+curation_mod._ferry_core_on_path()
+check("FERRY_CORE unset -> proxy defaults to the repo's core/",
+      str((REPO / "core").resolve()) in sys.path, sys.path[:3])
+sys.path[:] = _saved_path
+os.environ["FERRY_CORE"] = _saved_core
+logging.getLogger("rolling-context").removeHandler(_errs)
 
 
 print(f"\n{passed} passed, {failed} failed")

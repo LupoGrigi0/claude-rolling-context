@@ -138,9 +138,11 @@ def compact_index(slugs, keep_detail=None):
 
 
 def _ferry_core_on_path():
-    """Make ferry core (carrystore) importable when configured."""
-    core = os.environ.get("FERRY_CORE", "")
-    if core and core not in sys.path:
+    """Make ferry core (carrystore) importable: $FERRY_CORE, else this
+    repo's own core/ -- so a clone renders its carry with no env set."""
+    core = os.environ.get("FERRY_CORE") or str(
+        Path(__file__).resolve().parent.parent / "core")
+    if core not in sys.path:
         sys.path.insert(0, core)
 
 
@@ -157,12 +159,22 @@ class FerryCurationProducer:
         self.archive_dir = self.data_dir / "archive"
         self.blob_dir = self.archive_dir / "blobs"
         self.carry_path = self.data_dir / "carry.jsonl"
+        # Touched on every non-empty carry render. Makes "a carry is
+        # expected" sticky: a failed cycle writes a prefix with no CARRY
+        # section, so the prefix alone would go quiet after one alarm.
+        self.carry_marker = self.data_dir / ".carry-rendered"
         self.archive_dir.mkdir(parents=True, exist_ok=True)
         self.blob_dir.mkdir(parents=True, exist_ok=True)
         # Incremental archive line/byte counter (only reads what was
         # appended since the last cycle). Built lazily — off-metrics runs
         # never touch it.
         self._archive_totals = None
+        # Carry failures are LOUD (ship item S2): a carry that should have
+        # rendered and did not drops the mind's identity block from the
+        # crossing. Counted here for a health check / canary to read, and
+        # this cycle's reason lands in the metrics curation row's note.
+        self.carry_failures = 0
+        self.carry_error = None
 
     # ── blob store (§15.1a: blobs are NEVER inline) ────────────────────
     def _store_blob(self, b64_data):
@@ -368,27 +380,56 @@ class FerryCurationProducer:
         return lines
 
     # ── carry render (identity verbatim, from the block log) ───────────
-    def _render_carry(self):
+    def _carry_failed(self, why):
+        """Record + log a carry that did not render. Never raises: a dead
+        proxy fails closed, which is worse than a crossing without carry."""
+        self.carry_failures += 1
+        self.carry_error = why
+        log.error(f"[FERRY] CARRY NOT RENDERED: {why} -- the identity block "
+                  f"is MISSING from this crossing "
+                  f"(carry_failures={self.carry_failures})")
+        return ""
+
+    def _render_carry(self, expected=False):
+        """expected: a carry rendered before (prior prefix carried a CARRY
+        section, or this data dir's marker exists), so an absent or empty
+        carry now is a loss, not a fresh mind with no carry."""
+        self.carry_error = None
         if not self.carry_path.exists():
+            if expected:
+                return self._carry_failed(
+                    f"carry file missing at {self.carry_path} "
+                    f"(the previous prefix carried one)")
             return ""
         _ferry_core_on_path()
         try:
             from carrystore import CarryStore
-        except ImportError:
-            log.warning("FERRY_CORE not importable; carry not rendered")
-            return ""
+        except ImportError as e:
+            return self._carry_failed(f"carrystore not importable ({e}); "
+                                      f"FERRY_CORE={os.environ.get('FERRY_CORE')}")
         try:
             blocks = CarryStore(self.carry_path).materialize()
         except Exception as e:
-            log.warning(f"carry render failed ({e}); continuing without")
-            return ""
+            return self._carry_failed(
+                f"materialize failed ({type(e).__name__}: {e})")
         parts = []
         for b in blocks:
             if b.get("kind") == "scaffolding":
                 parts.append(b.get("payload", ""))
             else:
                 parts.append(b.get("payload", ""))
-        return "\n\n".join(p for p in parts if p)
+        carry = "\n\n".join(p for p in parts if p)
+        if not carry:
+            if expected:
+                return self._carry_failed(
+                    f"carry rendered empty from {self.carry_path} "
+                    f"(a carry rendered before)")
+            return ""
+        try:
+            self.carry_marker.touch()
+        except OSError as e:
+            log.warning(f"[FERRY] carry marker not written ({e})")
+        return carry
 
     # ── the producer ───────────────────────────────────────────────────
     def produce(self, messages, start_idx, keep_from_idx, existing_payload="",
@@ -425,7 +466,9 @@ class FerryCurationProducer:
                      f"lines (ranges collapsed; every byte still addressable)")
 
         sections = []
-        carry = self._render_carry()
+        carry = self._render_carry(
+            expected=(CARRY_HEADER in (existing_payload or "")
+                      or self.carry_marker.exists()))
         if carry:
             sections.append(f"{CARRY_HEADER}\n{carry}")
         sections.append(INDEX_HEADER + "\n"
@@ -464,7 +507,9 @@ class FerryCurationProducer:
                        context_tokens=at_tokens,
                        tokens_evicted=batch_chars // 4,
                        carry_chars=len(carry or ""),
-                       note=f"estimate:chars/4, turns={len(evicted)}")
+                       note=f"estimate:chars/4, turns={len(evicted)}"
+                            + (f"; carry=FAILED: {self.carry_error}"
+                               if self.carry_error else ""))
             if self._archive_totals is None and ArchiveTotals is not None:
                 self._archive_totals = ArchiveTotals(self.archive_dir)
             lines, size = (self._archive_totals.totals()

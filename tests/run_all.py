@@ -49,9 +49,10 @@ ZERO_CHECK_ALLOWED = set()         # see ALLOW-LIST above. Keep it empty.
 # Added 2026-10-09 after he cloned this repo fresh on Windows and measured 16 of 20 /
 # 414 checks against my 20 of 20 / 515. Three of the four were not Windows at all --
 # they were MY BOX leaking into the suite.
+#
+# test_curation.py left this table 2026-11-03 (ship item S2): invariant/carrystore
+# now live in the repo's core/, so it runs on any clone and a skip would be a FAIL.
 ENV_BOUND = {
-    "test_curation.py":
-        "imports invariant/carrystore, which are NOT in this repo; set FERRY_CORE",
     "test_watch_stall_survives_pulse.py":
         "asserts a property of the smoothcurves deployment; box-bound by design",
     "test_watch_deployed_matches_repo.py":

@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
-# Ensure rolling context proxy is running
-# Pure stdlib — no venv needed, just python
+# Ensure THIS mind's Ferry proxy is running, on THIS mind's port.
+# Pure stdlib — no venv needed, just python.
+#
+# The only launcher: install.sh runs this too. Config comes from
+# hooks/ferry_config.py (~/preferences.json "ferry", env overriding).
+#   supervised  -> start nothing, write nothing; the supervisor owns the port.
+#   otherwise   -> start (or reuse) the proxy, then VERIFY that the pid we
+#                  launched holds the port. Only then point settings.json at it.
+# A proxy that failed to bind because another mind's proxy is on the port must
+# never be mistaken for ours: that is mind #2 routing through mind #1's archive.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROXY_DIR="$SCRIPT_DIR/../proxy"
-PIDFILE="$HOME/.claude/rolling-context-proxy.pid"
-VERFILE="$HOME/.claude/rolling-context-proxy.version"
-HOOKLOG="$HOME/.claude/rolling-context-hook.log"
-PORT="${ROLLING_CONTEXT_PORT:-5588}"
-PROXY_URL="http://127.0.0.1:$PORT"
 CURRENT_VERSION=$(cat "$SCRIPT_DIR/../.claude-plugin/plugin.json" 2>/dev/null | grep '"version"' | head -1 | sed 's/.*"version".*"\(.*\)".*/\1/')
-
-log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$HOOKLOG"
-}
 
 # Detect Windows (git bash)
 if [[ "$(uname -s)" == MINGW* ]] || [[ "$(uname -s)" == MSYS* ]]; then
@@ -21,82 +20,57 @@ if [[ "$(uname -s)" == MINGW* ]] || [[ "$(uname -s)" == MSYS* ]]; then
 else
     IS_WINDOWS=false
 fi
+if [ "$IS_WINDOWS" = true ]; then PY_CMD="python"
+elif command -v python3 &>/dev/null; then PY_CMD="python3"
+else PY_CMD="python"
+fi
+CONF="$PY_CMD $SCRIPT_DIR/ferry_config.py"
 
-log "Hook started. PROXY_DIR=$PROXY_DIR IS_WINDOWS=$IS_WINDOWS"
-
-# Always update settings.json first (even if proxy is already running)
-SETTINGS_FILE="$HOME/.claude/settings.json"
-update_settings() {
-    local py_cmd=""
-    if [ "$IS_WINDOWS" = true ]; then
-        py_cmd="python"
-    elif command -v python3 &>/dev/null; then
-        py_cmd="python3"
-    else
-        py_cmd="python"
-    fi
-
-    $py_cmd - "$SETTINGS_FILE" "$PROXY_URL" <<'PYEOF'
-import json, sys, os
-
-settings_file = sys.argv[1]
-proxy_url = sys.argv[2]
-
-settings = {}
-if os.path.exists(settings_file):
-    try:
-        with open(settings_file, "r") as f:
-            settings = json.load(f)
-    except (json.JSONDecodeError, IOError):
-        settings = {}
-
-if "env" not in settings or not isinstance(settings["env"], dict):
-    settings["env"] = {}
-
-env = settings["env"]
-
-# Set ANTHROPIC_BASE_URL
-existing = env.get("ANTHROPIC_BASE_URL", "")
-if not existing:
-    env["ANTHROPIC_BASE_URL"] = proxy_url
-    print("set")
-elif "127.0.0.1" not in existing:
-    env["ROLLING_CONTEXT_UPSTREAM"] = existing
-    env["ANTHROPIC_BASE_URL"] = proxy_url
-    print("chained")
-else:
-    print("already")
-
-# Set plugin config defaults (only if not already present)
-defaults = {
-    "ROLLING_CONTEXT_PORT": "5588",
-    "ROLLING_CONTEXT_TRIGGER": "100000",
-    "ROLLING_CONTEXT_TARGET": "40000",
+HOOKLOG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/rolling-context-hook.log"
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$HOOKLOG" 2>/dev/null
 }
-for key, value in defaults.items():
-    if key not in env:
-        env[key] = value
-
-# Unset ROLLING_CONTEXT_MODEL = compress with the session's own model
-# (prompt-cache hit). Migrate away the old seeded haiku default.
-if env.get("ROLLING_CONTEXT_MODEL") == "claude-haiku-4-5-20251001":
-    del env["ROLLING_CONTEXT_MODEL"]
-
-with open(settings_file, "w") as f:
-    json.dump(settings, f, indent=2)
-    f.write("\n")
-PYEOF
+# Loud: the hook log, stdout (SessionStart adds it to the mind's context) and
+# stderr, then non-zero. settings.json is NOT touched on this path.
+fail() {
+    log "ERROR: $1"
+    echo "[FERRY] ERROR: $1"
+    echo "[FERRY] ERROR: $1" >&2
+    exit 1
+}
+# No proxy of ours holds the port: an earlier run's pointer would send the NEXT
+# session to a dead port or someone else's proxy. Take it back (only if Ferry
+# wrote it), then fail loud.
+fail_withdraw() {
+    local w
+    w=$($CONF withdraw 2>&1 | tr '\n' ' ')
+    fail "$1 settings.json: ${w:-no Ferry pointer to withdraw}"
 }
 
-RESULT=$(update_settings 2>/dev/null)
-case "$RESULT" in
-    set)     log "Set ANTHROPIC_BASE_URL=$PROXY_URL (settings.json)" ;;
-    chained) log "Chaining upstream (settings.json)" ;;
-    already) log "ANTHROPIC_BASE_URL already set (settings.json)" ;;
-    *)       log "WARNING: Could not update settings.json" ;;
-esac
+CONFIG_OUT=$($CONF env) || fail "ferry_config.py failed to run"
+eval "$CONFIG_OUT"
+[ -n "$FERRY_CONFIG_ERROR" ] && fail "$FERRY_CONFIG_ERROR"
 
-# Check if proxy is already running
+CLAUDE_DIR="$FERRY_CONFIG_DIR"
+mkdir -p "$CLAUDE_DIR"
+HOOKLOG="$CLAUDE_DIR/rolling-context-hook.log"
+PIDFILE="$CLAUDE_DIR/rolling-context-proxy.pid"
+VERFILE="$CLAUDE_DIR/rolling-context-proxy.version"
+PORT="$ROLLING_CONTEXT_PORT"
+
+log "Hook started. PROXY_DIR=$PROXY_DIR PORT=$PORT FERRY_DATA=$FERRY_DATA SUPERVISED=$FERRY_SUPERVISED"
+
+if [ "$FERRY_SUPERVISED" = 1 ]; then
+    log "Supervised: the supervisor owns port $PORT. Not starting a proxy, not touching settings.json."
+    exit 0
+fi
+
+point_settings() {
+    local result
+    result=$($CONF point 2>&1) || fail "could not update $CLAUDE_DIR/settings.json: $result"
+    log "settings.json: $result (ANTHROPIC_BASE_URL=http://127.0.0.1:$PORT)"
+}
+
 _kill_pid() {
     local pid="$1"
     if [ "$IS_WINDOWS" = true ]; then
@@ -108,22 +82,25 @@ _kill_pid() {
     fi
 }
 
-_pid_alive() {
+# Alive AND still our proxy: a stale pidfile's pid may now be anything.
+_our_proxy_alive() {
     local pid="$1"
     if [ "$IS_WINDOWS" = true ]; then
         powershell.exe -Command "if (Get-Process -Id $pid -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" 2>/dev/null
     else
-        kill -0 "$pid" 2>/dev/null
+        kill -0 "$pid" 2>/dev/null && $CONF is-proxy "$pid"
     fi
 }
 
 if [ -f "$PIDFILE" ]; then
     PID=$(cat "$PIDFILE")
-    if _pid_alive "$PID"; then
-        # Check if version changed — restart if so
+    if _our_proxy_alive "$PID"; then
         RUNNING_VERSION=$(cat "$VERFILE" 2>/dev/null)
         if [ "$CURRENT_VERSION" = "$RUNNING_VERSION" ]; then
-            log "Proxy already running (PID $PID, v$RUNNING_VERSION)"
+            $CONF holds-port "$PID" "$PORT" \
+                || fail_withdraw "proxy PID $PID is running but does NOT hold port $PORT (config changed? restart it)."
+            log "Proxy already running (PID $PID, v$RUNNING_VERSION, holds port $PORT)"
+            point_settings
             exit 0
         fi
         log "Version changed ($RUNNING_VERSION -> $CURRENT_VERSION), restarting proxy (PID $PID)"
@@ -132,22 +109,32 @@ if [ -f "$PIDFILE" ]; then
     rm -f "$PIDFILE" "$VERFILE"
 fi
 
-# Start proxy directly — no venv needed (pure stdlib)
-log "Starting proxy..."
-(
-    cd "$PROXY_DIR" || { log "ERROR: cannot cd to $PROXY_DIR"; exit 1; }
-    PYTHON_CMD=""
-    if [ "$IS_WINDOWS" = true ]; then
-        PYTHON_CMD="python"
-    elif command -v python3 &>/dev/null; then
-        PYTHON_CMD="python3"
-    else
-        PYTHON_CMD="python"
-    fi
-    nohup $PYTHON_CMD server.py > "$HOME/.claude/rolling-context-proxy.log" 2>&1 &
-    echo $! > "$PIDFILE"
-    echo "$CURRENT_VERSION" > "$VERFILE"
-    log "Proxy started with PID $! (v$CURRENT_VERSION)"
-) &
+# Start proxy directly — no venv needed (pure stdlib). The exported config
+# (ROLLING_CONTEXT_PORT, FERRY_DATA, ROLLING_CONTEXT_CURATION, ...) is its env.
+# exec, so $! is the python process itself and not a wrapper shell.
+log "Starting proxy on port $PORT..."
+# server.py puts its debug log in ~/.claude, which a CLAUDE_CONFIG_DIR mind may
+# not have -- the FileHandler then kills it at import. Keep it in the config dir.
+[ -d "$HOME/.claude" ] || export ROLLING_CONTEXT_LOG="${ROLLING_CONTEXT_LOG:-$CLAUDE_DIR/rolling-context-debug-$(basename "$FERRY_DATA").log}"
+(cd "$PROXY_DIR" && exec nohup $PY_CMD server.py > "$CLAUDE_DIR/rolling-context-proxy.log" 2>&1) &
+PID=$!
 
-exit 0
+# Verify: the pid WE started must hold the port. Up to ~15s.
+for _ in $(seq 60); do
+    if $CONF holds-port "$PID" "$PORT"; then
+        echo "$PID" > "$PIDFILE"
+        echo "$CURRENT_VERSION" > "$VERFILE"
+        log "Proxy started with PID $PID (v$CURRENT_VERSION), verified on port $PORT"
+        point_settings
+        exit 0
+    fi
+    kill -0 "$PID" 2>/dev/null || break
+    sleep 0.25
+done
+
+HOLDER=$($CONF who-holds "$PORT" 2>/dev/null)
+if kill -0 "$PID" 2>/dev/null; then
+    _kill_pid "$PID"       # the process we just started, never another
+fi
+TAIL=$(tail -3 "$CLAUDE_DIR/rolling-context-proxy.log" 2>/dev/null | tr '\n' ' ')
+fail_withdraw "proxy PID $PID did not take port $PORT${HOLDER:+ (held by PID $HOLDER)}. Log: $TAIL."

@@ -21,7 +21,7 @@ sys.path.insert(0, str(REPO / "proxy"))
 tmp = Path(tempfile.mkdtemp())
 os.environ["ROLLING_CONTEXT_CURATION"] = "ferry"
 os.environ["FERRY_DATA"] = str(tmp / "ferry-data")
-os.environ["FERRY_CORE"] = str(Path.home() / "ferry" / "core")
+os.environ["FERRY_CORE"] = str(REPO / "core")  # the repo carries its own core (S2)
 
 import server  # noqa: E402
 from server import CompressionStore  # noqa: E402

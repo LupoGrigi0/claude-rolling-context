@@ -74,34 +74,57 @@ Instead of replacing everything, this plugin:
 
 ## Install
 
-### Option 1: Claude Code Plugin (recommended)
+Ferry is this fork: **https://github.com/LupoGrigi0/claude-rolling-context**.
+(Upstream NodeNestor's plugin installs plain rolling-context summarisation, not
+Ferry curation — do not use its marketplace entry for a Ferry mind.)
 
-Run these two commands inside Claude Code:
+One install per mind. Each mind needs **its own port** — there is no shared
+default; two minds on one port means one routes through the other's proxy.
 
+### Config: one declared source
+
+Put a `ferry` block in `~/preferences.json` (it may be read-only to the mind):
+
+```json
+{"ferry": {"port": 5701, "data_dir": "/home/me/ferry-data"}}
 ```
-/plugin marketplace add https://github.com/NodeNestor/nestor-plugins
-/plugin install rolling-context
-```
 
-Restart your terminal and start a new Claude Code session. On the **first start**, the plugin configures `ANTHROPIC_BASE_URL` and starts the proxy. Since the env var only takes effect on the next terminal, **restart your terminal once more** — after that, everything works automatically. No pip install needed — pure Python stdlib.
+| Field | Env override | Default |
+|-------|--------------|---------|
+| `port` | `ROLLING_CONTEXT_PORT` | **none — required** |
+| `data_dir` | `FERRY_DATA` | `~/ferry-data` |
+| `curation` | `ROLLING_CONTEXT_CURATION` | `ferry` |
+| `upstream` | `ROLLING_CONTEXT_UPSTREAM` | resolved from settings / env |
+| `supervised` | `FERRY_SUPERVISED` | `false` |
 
-### Option 2: Manual install
+Env vars override the file. Settings are read from and written to
+`$CLAUDE_CONFIG_DIR/settings.json` (else `~/.claude/settings.json`).
+`hooks/ferry_config.py` is the only resolver; installer, hook and uninstaller
+all call it.
 
-**Linux / macOS:**
+**`supervised: true`** means a supervisor (e.g. the `hacs-ferry@$USER` unit)
+owns the proxy. The SessionStart hook then starts nothing and writes nothing —
+exactly one launcher per mind.
+
+### Linux / macOS
+
 ```bash
-git clone https://github.com/NodeNestor/claude-rolling-context.git ~/claude-rolling-context
+git clone https://github.com/LupoGrigi0/claude-rolling-context.git ~/claude-rolling-context
 cd ~/claude-rolling-context
-bash install.sh
+ROLLING_CONTEXT_PORT=5701 bash install.sh    # or set "port" in ~/preferences.json
 ```
 
-**Windows (PowerShell):**
-```powershell
-git clone https://github.com/NodeNestor/claude-rolling-context.git $HOME\claude-rolling-context
-cd $HOME\claude-rolling-context
-powershell -ExecutionPolicy Bypass -File install.ps1
-```
+The installer writes `ROLLING_CONTEXT_CURATION=ferry` and a per-mind
+`FERRY_DATA` (values `preferences.json` declares are left there, not copied),
+registers the plugin, then starts the proxy through the SessionStart hook. The
+hook **verifies its own process holds the port** before it points
+`ANTHROPIC_BASE_URL` at it, and fails loudly (settings untouched) if not. An
+existing `ANTHROPIC_BASE_URL` that Ferry did not write — remote or loopback —
+becomes `ROLLING_CONTEXT_UPSTREAM`. Start a new Claude Code session afterwards.
+Requires Python 3.7+ (pure stdlib).
 
-The installer configures `ANTHROPIC_BASE_URL` and registers the plugin. Restart your terminal and you're done. Requires Python 3.7+ (no pip install needed — pure stdlib).
+**Windows:** `install.ps1` has not yet been updated for per-mind ports and
+`preferences.json`; use the Linux path for Ferry minds for now.
 
 ## How Compression Works
 
@@ -277,7 +300,7 @@ All settings via environment variables (all optional — defaults work great):
 | `ROLLING_CONTEXT_TRIGGER` | `100000` | Compress when context exceeds this many tokens |
 | `ROLLING_CONTEXT_TARGET` | `40000` | Keep this many tokens of recent messages after compression |
 | `ROLLING_CONTEXT_MODEL` | *(session model)* | Summarizer model; unset = the session's own model (prompt-cache hit) |
-| `ROLLING_CONTEXT_PORT` | `5588` | Proxy listen port |
+| `ROLLING_CONTEXT_PORT` | *(none — required, see Install)* | Proxy listen port, one per mind |
 | `ROLLING_CONTEXT_UPSTREAM` | `https://api.anthropic.com` | Upstream API URL (chain to another proxy!) |
 | `ROLLING_CONTEXT_SUMMARIZER_URL` | *(upstream)* | Custom endpoint for summarization (local model, other API) |
 | `ROLLING_CONTEXT_SUMMARIZER_KEY` | *(uses Claude Code auth)* | API key for custom summarizer endpoint |

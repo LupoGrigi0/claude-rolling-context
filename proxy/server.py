@@ -18,6 +18,7 @@ import os
 from collections import OrderedDict
 import sys
 import logging
+import logging.handlers
 import threading
 import time
 import ssl
@@ -35,7 +36,14 @@ except Exception:                                   # pragma: no cover
     metrics = None
 from compressor import RollingCompressor
 
-class FlushFileHandler(logging.FileHandler):
+# The debug log ROTATES (ship item S9). It is DEBUG-level and a supervised proxy
+# runs for weeks; an unbounded file in a mind's home is a disk-full waiting for
+# a date. 10 MB x 3 backups keeps the last few days of a busy mind, bounded.
+LOG_MAX_BYTES = 10 * 1024 * 1024
+LOG_BACKUPS = 3
+
+
+class FlushFileHandler(logging.handlers.RotatingFileHandler):
     def emit(self, record):
         super().emit(record)
         self.flush()
@@ -73,14 +81,22 @@ def _log_filename():
         # NameError at import. Caught before it shipped, but only because the
         # syntax check runs the module rather than just parsing it.
         tag = str(getattr(endpoints, "LISTEN_PORT", "") or "")
-    return os.path.join(os.path.expanduser("~"), ".claude",
+    # ~/.claude as before; a CLAUDE_CONFIG_DIR mind may have none, and the
+    # handler below would then kill the proxy at import (a supervised unit
+    # restart-loops on it forever) -- so fall back to the config dir.
+    base = os.path.join(os.path.expanduser("~"), ".claude")
+    if not os.path.isdir(base):
+        base = endpoints.config_dir()
+        os.makedirs(base, exist_ok=True)
+    return os.path.join(base,
                         f"rolling-context-debug{'-' + tag if tag else ''}.log")
 
 
 _log_path = _log_filename()
 # encoding is explicit: without it Windows falls back to cp1252 and the em
 # dashes in these log messages land as mojibake.
-_log_handler = FlushFileHandler(_log_path, mode="a", encoding="utf-8")
+_log_handler = FlushFileHandler(_log_path, mode="a", encoding="utf-8",
+                                maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUPS)
 _log_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
 logging.basicConfig(
     level=logging.DEBUG,
@@ -317,6 +333,7 @@ _convergence = {
     "locked_out": False,   # stop curating: we are provably not converging
     "last_landing": None,
     "floor_at_lockout": None,
+    "lockout_note": None,  # why, for /health -> ferry-canary (ship item S7)
 }
 
 
@@ -349,7 +366,13 @@ def _thrash_note_landing(total_input, log, metrics, model=None, window=None):
         # be findable in a log six hours later.
         _convergence["locked_out"] = True
         _convergence["floor_at_lockout"] = total_input
-        log.warning(
+        _convergence["lockout_note"] = (
+            f"{THRASH_STRIKES} cycles landed above {ceiling:,.0f}; "
+            f"floor >= {total_input:,}; target={TARGET_TOKENS}")
+        # ERROR, not WARNING (S7): from here the mind is on native compaction
+        # with nothing curating it. /health reports it too, so ferry-canary
+        # exits non-zero -- a log line alone is a failure with no audience.
+        log.error(
             f"[FERRY] *** NOT CONVERGING -- CURATION DISABLED *** {THRASH_STRIKES} "
             f"consecutive cycles failed to reach target. The unevictable floor is "
             f"at least {total_input:,} tokens (system prompt + tool definitions + "
@@ -392,6 +415,7 @@ def _thrash_maybe_clear(total_input, log):
                  f"{TARGET_TOKENS:,} -- clearing thrash lockout")
         _convergence["locked_out"] = False
         _convergence["strikes"] = 0
+        _convergence["lockout_note"] = None
         return
     floor = _convergence.get("floor_at_lockout")
     if floor is None:
@@ -403,6 +427,7 @@ def _thrash_maybe_clear(total_input, log):
                  f"material, retrying curation once")
         _convergence["locked_out"] = False
         _convergence["strikes"] = 0
+        _convergence["lockout_note"] = None
 # Empty = native mode compresses with the session's own model (prompt-cache
 # hit); set to pin a specific summarizer model.
 SUMMARIZER_MODEL = os.environ.get("ROLLING_CONTEXT_MODEL") or ""
@@ -986,6 +1011,20 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
+    def end_headers(self):
+        """ferry-canary's proof of WHICH proxy answered (ship item S6).
+
+        A request carrying X-Ferry-Canary gets the nonce echoed back plus this
+        proxy's data dir: an upstream cannot echo it, and another mind's proxy
+        on the port names another data dir. Requests without it -- every real
+        one -- are untouched.
+        """
+        nonce = getattr(self, "headers", None) and self.headers.get("X-Ferry-Canary")
+        if nonce and nonce.isalnum() and len(nonce) <= 64:
+            self.send_header("X-Ferry-Canary", nonce)
+            self.send_header("X-Ferry-Data", os.path.realpath(_ferry_data))
+        super().end_headers()
+
     def _read_body(self) -> bytes:
         length = int(self.headers.get("content-length", 0))
         return self.rfile.read(length) if length > 0 else b""
@@ -1141,6 +1180,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
             "total_tokens_saved": compressor.total_tokens_saved,
             "stored_compressions": len(store.compressions),
             "active_compressions": active,
+            "curation_locked_out": _convergence["locked_out"],
+            "lockout_note": _convergence.get("lockout_note"),
         }
         body = json.dumps(data).encode()
         self.send_response(200)

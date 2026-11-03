@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""ferry-canary -- prove THIS mind reaches ITS OWN Ferry proxy, and that the
+proxy can serve. Ship items S6 (canary) and S7 (lockout reaches a human).
+
+    ferry-canary                 port + data dir from hooks/ferry_config.py
+                                 (~/preferences.json "ferry", env overriding --
+                                 the same resolver the hook and the unit use)
+    ferry-canary --port N --data DIR [--wait SECONDS] [--pid PID]
+                                 --pid: the port must be held by PID itself
+                                 (the unit passes $MAINPID: a same-mind proxy
+                                 from elsewhere answers identically otherwise)
+
+Exit 0 ONLY on proof. Anything else is non-zero with one line saying why:
+    0  OK            the proxy on the port echoed our nonce, names THIS mind's
+                     data dir, is not in thrash lockout, and forwarded a real
+                     request that upstream answered
+    1  FAIL          we looked and it is wrong (nothing listening, not Ferry,
+                     another mind's proxy, curation disabled, upstream unreachable)
+    2  COULD-NOT-LOOK  config unreadable, or an answer we cannot interpret
+
+The real request is GET /v1/models through the proxy's forwarding path. It
+carries NO credentials of ours. If the proxy terminates credentials it adds its
+own key upstream; either way we print status codes only -- never a header
+value, never a body -- so nothing secret can reach this output.
+
+Why a nonce AND a data dir: an upstream cannot echo a nonce it never saw, and a
+proxy belonging to another mind on the same port names a different data dir.
+A 200 from "something on the port" proves neither (5613, 10-11: a restart came
+up looking healthy and unable to serve).
+
+Usable as the unit's ExecStartPost (use --wait: the proxy may not be listening
+yet) and from a timer. Stdlib only.
+"""
+import argparse
+import http.client
+import json
+import os
+import shlex
+import subprocess
+import sys
+import time
+import uuid
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+CONFIG = os.path.join(HERE, "..", "hooks", "ferry_config.py")
+OK, FAIL, COULD_NOT_LOOK = 0, 1, 2
+
+
+def done(code, msg):
+    label = {OK: "OK", FAIL: "FAIL", COULD_NOT_LOOK: "COULD-NOT-LOOK"}[code]
+    print(f"ferry-canary: {label}: {msg}", file=sys.stdout if code == OK else sys.stderr)
+    sys.exit(code)
+
+
+def resolve_config():
+    """-> (port, data_dir) from ferry_config.py env, the one declared source."""
+    try:
+        r = subprocess.run([sys.executable, CONFIG, "env"], capture_output=True,
+                           text=True, timeout=30)
+    except Exception as e:
+        done(COULD_NOT_LOOK, f"could not run ferry_config.py: {type(e).__name__}")
+    if r.returncode != 0:
+        done(COULD_NOT_LOOK, f"ferry_config.py exited {r.returncode}")
+    env = {}
+    for line in r.stdout.splitlines():
+        parts = shlex.split(line)
+        if len(parts) == 2 and parts[0] == "export" and "=" in parts[1]:
+            k, v = parts[1].split("=", 1)
+            env[k] = v
+    if env.get("FERRY_CONFIG_ERROR"):
+        done(COULD_NOT_LOOK, f"config: {env['FERRY_CONFIG_ERROR']}")
+    if not env.get("ROLLING_CONTEXT_PORT") or not env.get("FERRY_DATA"):
+        done(COULD_NOT_LOOK, "ferry_config.py gave no port or data dir")
+    return int(env["ROLLING_CONTEXT_PORT"]), env["FERRY_DATA"]
+
+
+def ask(port, method, path, nonce, timeout=15):
+    """-> (status, headers {lower: [values]}, body bytes). Raises OSError."""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    try:
+        conn.request(method, path, headers={"X-Ferry-Canary": nonce})
+        resp = conn.getresponse()
+        body = resp.read()
+        headers = {}
+        for k, v in resp.getheaders():
+            headers.setdefault(k.lower(), []).append(v)
+        return resp.status, headers, body
+    finally:
+        conn.close()
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--port", type=int)
+    ap.add_argument("--data", help="this mind's FERRY_DATA")
+    ap.add_argument("--wait", type=float, default=0,
+                    help="seconds to keep retrying a refused connection")
+    ap.add_argument("--pid", type=int,
+                    help="require that this PID is the one listening on the port")
+    a = ap.parse_args()
+    if a.port is None or a.data is None:
+        port, data = resolve_config()
+        port = a.port if a.port is not None else port
+        data = a.data if a.data is not None else data
+    else:
+        port, data = a.port, a.data
+    want_data = os.path.realpath(os.path.expanduser(data))
+    nonce = uuid.uuid4().hex
+
+    # 1. WHO is on the port -- and is it curating?
+    deadline = time.monotonic() + a.wait
+    while True:
+        try:
+            status, headers, body = ask(port, "GET", "/health", nonce)
+            break
+        except ConnectionRefusedError:
+            if time.monotonic() >= deadline:
+                done(FAIL, f"nothing listening on 127.0.0.1:{port}")
+            time.sleep(0.5)
+        except OSError as e:
+            done(FAIL, f"127.0.0.1:{port} did not answer /health: {type(e).__name__}")
+    if nonce not in headers.get("x-ferry-canary", []):
+        done(FAIL, f"127.0.0.1:{port} answered (HTTP {status}) but did not echo the "
+                   f"canary -- not a Ferry proxy, or one older than the canary hook")
+    got_data = (headers.get("x-ferry-data") or [""])[0]
+    if got_data != want_data:
+        done(FAIL, f"the proxy on port {port} serves data dir {got_data!r}, "
+                   f"not this mind's {want_data!r} -- another mind's proxy")
+    if a.pid is not None and subprocess.run(
+            [sys.executable, CONFIG, "holds-port", str(a.pid), str(port)]).returncode:
+        done(FAIL, f"port {port} answers as this mind's proxy but is NOT held by "
+                   f"PID {a.pid} -- some other launch of it (stop that one first)")
+    try:
+        health = json.loads(body)
+    except ValueError:
+        done(COULD_NOT_LOOK, f"/health on port {port} returned HTTP {status}, not JSON")
+    if not isinstance(health, dict) or "curation_locked_out" not in health:
+        done(COULD_NOT_LOOK, f"/health on port {port} does not report curation_locked_out")
+    if health["curation_locked_out"]:
+        done(FAIL, f"curation disabled (thrash lockout) on port {port}: "
+                   f"{health.get('lockout_note') or 'no note'} -- the mind is on "
+                   f"native compaction; see docs/RUNBOOK.md")
+
+    # 2. A REAL request through the forwarding path. 502 is the proxy saying it
+    # could not reach upstream; any other 5xx is upstream unable to serve.
+    try:
+        status, headers, _ = ask(port, "GET", "/v1/models", nonce, timeout=30)
+    except OSError as e:
+        done(FAIL, f"forwarded request via port {port} failed: {type(e).__name__}")
+    if nonce not in headers.get("x-ferry-canary", []):
+        done(FAIL, f"forwarded request via port {port} was not answered by the proxy")
+    if status == 502:
+        done(FAIL, f"proxy on port {port} could not reach its upstream (HTTP 502)")
+    if status >= 500:
+        done(FAIL, f"upstream via port {port} answered HTTP {status}")
+    done(OK, f"port {port} is this mind's proxy ({want_data}), no thrash "
+             f"lockout, upstream answered HTTP {status}")
+
+
+if __name__ == "__main__":
+    main()

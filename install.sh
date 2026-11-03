@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# Install the Rolling Context plugin for Claude Code.
+# Install Ferry (rolling context, curation=ferry) for ONE mind.
+#
+# Config: ~/preferences.json "ferry" block, env vars overriding -- see
+# hooks/ferry_config.py. A port is REQUIRED; there is no shared default.
+# Honours CLAUDE_CONFIG_DIR for settings.json and the plugin link.
 #
 # Pure stdlib — no pip install needed. Just requires Python 3.7+.
 
@@ -7,109 +11,71 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROXY_DIR="$SCRIPT_DIR/proxy"
-PORT="${ROLLING_CONTEXT_PORT:-5588}"
-PROXY_URL="http://127.0.0.1:$PORT"
 
-echo "=== Rolling Context Proxy Installer ==="
+echo "=== Ferry Installer ==="
 echo ""
 
 # 1. Check Python is available
-echo "[1/3] Checking Python..."
-if command -v python3 &>/dev/null; then
-    PY_VERSION=$(python3 --version 2>&1)
-    echo "  Found $PY_VERSION (pure stdlib — no pip install needed)"
-elif command -v python &>/dev/null; then
-    PY_VERSION=$(python --version 2>&1)
-    echo "  Found $PY_VERSION (pure stdlib — no pip install needed)"
+echo "[1/4] Checking Python..."
+if command -v python3 &>/dev/null; then PY_CMD="python3"
+elif command -v python &>/dev/null; then PY_CMD="python"
 else
     echo "  ERROR: Python not found. Install Python 3.7+ and try again."
     exit 1
 fi
+echo "  Found $($PY_CMD --version 2>&1) (pure stdlib — no pip install needed)"
+CONF="$PY_CMD $SCRIPT_DIR/hooks/ferry_config.py"
 
-# 2. Configure ANTHROPIC_BASE_URL in Claude Code settings.json
-echo "[2/3] Configuring Claude Code settings.json..."
-
-SETTINGS_FILE="$HOME/.claude/settings.json"
-mkdir -p "$HOME/.claude"
-
-PY_CMD=""
-if command -v python3 &>/dev/null; then PY_CMD="python3"
-elif command -v python &>/dev/null; then PY_CMD="python"
-fi
-
-$PY_CMD - "$SETTINGS_FILE" "$PROXY_URL" <<'PYEOF'
-import json, sys, os
-
-settings_file = sys.argv[1]
-proxy_url = sys.argv[2]
-
-settings = {}
-if os.path.exists(settings_file):
-    try:
-        with open(settings_file, "r") as f:
-            settings = json.load(f)
-    except (json.JSONDecodeError, IOError):
-        settings = {}
-
-if "env" not in settings or not isinstance(settings["env"], dict):
-    settings["env"] = {}
-
-env = settings["env"]
-
-existing = env.get("ANTHROPIC_BASE_URL", "")
-if not existing:
-    env["ANTHROPIC_BASE_URL"] = proxy_url
-    print(f"  Set ANTHROPIC_BASE_URL={proxy_url}")
-elif "127.0.0.1" not in existing:
-    env["ROLLING_CONTEXT_UPSTREAM"] = existing
-    env["ANTHROPIC_BASE_URL"] = proxy_url
-    print(f"  Chaining: ANTHROPIC_BASE_URL={proxy_url} -> upstream={existing}")
-else:
-    print(f"  ANTHROPIC_BASE_URL already set")
-
-# Set plugin config defaults (only if not already present)
-defaults = {
-    "ROLLING_CONTEXT_PORT": "5588",
-    "ROLLING_CONTEXT_TRIGGER": "100000",
-    "ROLLING_CONTEXT_TARGET": "40000",
-}
-for key, value in defaults.items():
-    if key not in env:
-        env[key] = value
-
-# Unset ROLLING_CONTEXT_MODEL = compress with the session's own model
-# (prompt-cache hit). Migrate away the old seeded haiku default.
-if env.get("ROLLING_CONTEXT_MODEL") == "claude-haiku-4-5-20251001":
-    del env["ROLLING_CONTEXT_MODEL"]
-
-with open(settings_file, "w") as f:
-    json.dump(settings, f, indent=2)
-    f.write("\n")
-
-print(f"  Settings written to {settings_file}")
-PYEOF
+# 2. Resolve config from the one declared source and persist it. `install`
+# runs BEFORE the eval below: it ranks each value by where it came from, and
+# our own exports would otherwise read back to it as env overrides.
+echo "[2/4] Resolving Ferry config..."
+$CONF install || exit 1
+CONFIG_OUT=$($CONF env)     # set -e: a resolver that crashed stops the install
+eval "$CONFIG_OUT"
+CLAUDE_DIR="$FERRY_CONFIG_DIR"
 
 # 3. Register plugin
-echo "[3/3] Registering Claude Code plugin..."
-
-PLUGIN_LINK="$HOME/.claude/plugins/rolling-context"
-mkdir -p "$HOME/.claude/plugins"
-
+echo "[3/4] Registering Claude Code plugin..."
+PLUGIN_LINK="$CLAUDE_DIR/plugins/rolling-context"
+mkdir -p "$CLAUDE_DIR/plugins"
 if [ -L "$PLUGIN_LINK" ] || [ -d "$PLUGIN_LINK" ]; then
     rm -rf "$PLUGIN_LINK"
 fi
 ln -s "$SCRIPT_DIR" "$PLUGIN_LINK"
 echo "  Plugin linked at $PLUGIN_LINK"
+# Every curated prefix tells the mind to run a bare `ferry-fetch`.
+mkdir -p "$HOME/.local/bin"
+ln -sf "$SCRIPT_DIR/bin/ferry-fetch" "$HOME/.local/bin/ferry-fetch"
+echo "  ferry-fetch linked at $HOME/.local/bin/ferry-fetch"
+case ":$PATH:" in
+    *":$HOME/.local/bin:"*) ;;
+    *) echo "  WARNING: $HOME/.local/bin is not on PATH -- add it, or the mind's"
+       echo "           ferry-fetch (named in every curated prefix) is 'command not found'." ;;
+esac
+
+# 4. Start + verify the proxy, through the ONE launcher (the SessionStart hook).
+# It points ANTHROPIC_BASE_URL at the port only after its own pid holds it.
+echo "[4/4] Starting proxy on port $ROLLING_CONTEXT_PORT..."
+if [ "$FERRY_SUPERVISED" = 1 ]; then
+    # The supervisor launches from the same config, so the port is declared,
+    # not guessed. Point only once the canary proves THIS mind's proxy is on it.
+    echo "  Supervised: not starting a proxy here."
+    $PY_CMD "$SCRIPT_DIR/tools/ferry-canary" --wait 10 \
+        || { echo "  Supervised proxy not proven (above); settings.json NOT pointed. Install NOT complete."; exit 1; }
+    echo "  ANTHROPIC_BASE_URL: $($CONF point)"
+else
+    bash "$SCRIPT_DIR/hooks/start-proxy.sh" || { echo "  Install NOT complete."; exit 1; }
+    echo "  Proxy verified on port $ROLLING_CONTEXT_PORT; ANTHROPIC_BASE_URL points at it."
+fi
 
 echo ""
 echo "=== Installation Complete ==="
 echo ""
-echo "The proxy will auto-start when you launch Claude Code."
-echo "To start it manually: cd $PROXY_DIR && python3 server.py"
+echo "  ROLLING_CONTEXT_PORT     = $ROLLING_CONTEXT_PORT"
+echo "  ROLLING_CONTEXT_CURATION = $ROLLING_CONTEXT_CURATION"
+echo "  FERRY_DATA               = $FERRY_DATA"
+echo "  settings.json            = $CLAUDE_DIR/settings.json"
 echo ""
-echo "Configuration (via environment variables):"
-echo "  ROLLING_CONTEXT_PORT    = $PORT"
-echo "  ROLLING_CONTEXT_TRIGGER = ${ROLLING_CONTEXT_TRIGGER:-80000} tokens"
-echo "  ROLLING_CONTEXT_TARGET  = ${ROLLING_CONTEXT_TARGET:-40000} tokens"
-echo ""
-echo "Start a new Claude Code session to activate the proxy."
+echo "To start it manually: bash $SCRIPT_DIR/hooks/start-proxy.sh"
+echo "Start a new Claude Code session to route through Ferry."
