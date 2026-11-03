@@ -28,11 +28,15 @@ Environment=FERRY_SUPERVISED=1
 # preferences.json, so keep it short.
 EnvironmentFile=-/etc/ferry/%i.env
 ExecStart=/bin/sh -c 'conf=$$(/usr/bin/python3 "$$FERRY_HOME/hooks/ferry_config.py" env) || exit 1; eval "$$conf"; if [ -n "$$FERRY_CONFIG_ERROR" ]; then echo "ferry config: $$FERRY_CONFIG_ERROR" >&2; exit 1; fi; cd "$$FERRY_HOME/proxy" && exec /usr/bin/python3 server.py'
-# Proof, not a green unit: this mind's proxy, curating, forwarding. Non-zero
-# fails the start, and Restart= tries again.
+# Proof, not a green unit: this mind's proxy, curating, forwarding -- recorded in
+# the journal; it does NOT gate the start (see below).
 # --pid: the port must be held by THIS unit's process, not a hook-launched
 # proxy of the same mind still running from somewhere else.
-ExecStartPost=/usr/bin/python3 ${FERRY_HOME}/tools/ferry-canary --wait 30 --pid ${MAINPID}
+# Record-only ("-"): the canary cannot tell "upstream down" from "proxy broken",
+# so as a start-gate an Anthropic outage would hot-loop a healthy proxy every
+# RestartSec (Bastion, measured). The proxy process is the only start-gate; the
+# canary timer is the alarm.
+ExecStartPost=-/usr/bin/python3 ${FERRY_HOME}/tools/ferry-canary --wait 30 --pid ${MAINPID}
 Restart=on-failure
 RestartSec=10
 # Everything the proxy logs is in its rotating debug log (docs/RUNBOOK.md);

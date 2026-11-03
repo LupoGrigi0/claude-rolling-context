@@ -121,7 +121,30 @@ def resolve(defaults=DEFAULTS):
         else:
             vals[key], srcs[key] = "", "unset"
     vals["supervised"] = "1" if vals["supervised"].lower() in ("1", "true", "yes") else "0"
+    if root_says_supervised():
+        vals["supervised"], srcs["supervised"] = "1", "root"
     return vals, srcs
+
+
+# Root's word on supervision. The unit reads the same file. Only "1" is honoured
+# from here and nothing the mind controls can override it: a mind that could flip
+# itself unsupervised would start a second proxy that fights the unit for the
+# port (Bastion, 2026-11-03). Deliberately NOT env-overridable for that reason.
+ROOT_ENV_DIR = "/etc/ferry"
+
+
+def root_says_supervised():
+    import pwd
+    path = os.path.join(ROOT_ENV_DIR, pwd.getpwuid(os.getuid()).pw_name + ".env")
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                k, _, v = line.strip().partition("=")
+                if k.strip() == "FERRY_SUPERVISED" and v.strip().strip("'\"") == "1":
+                    return True
+    except OSError:
+        pass
+    return False
 
 
 def port_error(port):

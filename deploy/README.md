@@ -19,11 +19,18 @@ mind's unix user, exact case per `id`. Modelled on `hacs-doorbell@.service`.
   does not read settings.json `env`** — only a hook-started proxy inherits it
   from Claude Code. Env beats preferences.json.
 - Sets `FERRY_SUPERVISED=1`. `Restart=on-failure`, every 10 s, never gives up.
-- `ExecStartPost` runs `tools/ferry-canary --wait 30 --pid $MAINPID`: the start
-  only counts if the port is held by the unit's own process, which echoes a
-  nonce, names **this** mind's data dir, is not in
-  thrash lockout, and forwards a real request upstream answers. A failed canary
-  fails the start and the unit retries.
+- `ExecStartPost=-` runs `tools/ferry-canary --wait 30 --pid $MAINPID`, **record-only**:
+  it checks the port is held by the unit's own process, which echoes a nonce,
+  names **this** mind's data dir, is not in thrash lockout, and forwards a real
+  request upstream answers — and writes the verdict to the journal. It does NOT
+  fail the start: the canary cannot tell "upstream down" from "proxy broken", so
+  as a gate an Anthropic outage would restart a healthy proxy every 10 s and
+  leave the mind with no proxy at all (Bastion, 2026-11-03). The proxy process
+  is the only start-gate; the canary **timer** is the alarm.
+- Root's word on supervision: put `FERRY_SUPERVISED=1` in `/etc/ferry/USER.env`.
+  The unit reads it, and so does the mind's SessionStart hook (via
+  `hooks/ferry_config.py`), which then never starts a second proxy. A mind
+  cannot override it from its own `preferences.json` or env.
 - Proxy output goes to its rotating debug log, not the journal (tracebacks still
   reach the journal via stderr).
 
