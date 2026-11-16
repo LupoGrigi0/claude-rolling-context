@@ -36,15 +36,16 @@ CONFIG_OUT=$($CONF env)     # set -e: a resolver that crashed stops the install
 eval "$CONFIG_OUT"
 CLAUDE_DIR="$FERRY_CONFIG_DIR"
 
-# 3. Register plugin
-echo "[3/4] Registering Claude Code plugin..."
+# 3. Register the SessionStart hook in settings.json -- that is what restarts a
+# dead proxy. (A plugin symlink is NOT loaded by this Claude Code: Cairn measured
+# it, 2026-11-16. An old link from an earlier install is removed if it is ours.)
+echo "[3/4] Registering Ferry's SessionStart hook..."
+$CONF register-hook || { echo "  could not register the hook"; exit 1; }
 PLUGIN_LINK="$CLAUDE_DIR/plugins/rolling-context"
-mkdir -p "$CLAUDE_DIR/plugins"
-if [ -L "$PLUGIN_LINK" ] || [ -d "$PLUGIN_LINK" ]; then
-    rm -rf "$PLUGIN_LINK"
+if [ -L "$PLUGIN_LINK" ] && [ -f "$(readlink -f "$PLUGIN_LINK")/hooks/start-proxy.sh" ]; then
+    rm -f "$PLUGIN_LINK"
+    echo "  removed the old, unloaded plugin link"
 fi
-ln -s "$SCRIPT_DIR" "$PLUGIN_LINK"
-echo "  Plugin linked at $PLUGIN_LINK"
 # Every curated prefix tells the mind to run a bare `ferry-fetch`.
 mkdir -p "$HOME/.local/bin"
 ln -sf "$SCRIPT_DIR/bin/ferry-fetch" "$HOME/.local/bin/ferry-fetch"

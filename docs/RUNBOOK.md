@@ -38,8 +38,12 @@ Also: `[FERRY] ERROR: ...` at the top of the mind's session is the hook failing 
    (removes only what Ferry wrote; if a non-Anthropic `ferry.upstream` is declared it puts that route back).
    By hand: delete `env.ANTHROPIC_BASE_URL` and `env.ROLLING_CONTEXT_WROTE_BASE_URL`.
    **Not on Anthropic?** Set `env.ANTHROPIC_BASE_URL` to the `ferry.upstream` value instead of deleting — deleting sends that key to Anthropic.
-2. Stop the hook re-pointing it next session: uninstall (above), or remove the `"ferry"` block / the plugin link `<dir of S>/plugins/rolling-context`.
-3. **Restart the session** so Claude Code reads `S` again. Never `claude --bg --resume` a running session — it forks.
+2. Stop the hook re-pointing it next session: uninstall (above), or remove Ferry's
+   `SessionStart` entry from `S` (`hooks` → the command running `.../hooks/start-proxy.sh`).
+3. **No restart needed:** Claude Code re-reads `S` when it changes — the next request
+   goes direct. (Cairn's metrics show requests through the proxy 25 s after install
+   wrote `S`, before any relaunch, 2026-11-16 — inferred from the receiver's record.)
+   If in doubt, restart the session. Never `claude --bg --resume` a running session — it forks.
 
 Restore later: `bash install.sh` again, canary, restart the session.
 

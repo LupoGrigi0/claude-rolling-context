@@ -116,6 +116,7 @@ fi
 # mind's own route from preferences "upstream", if declared), then Ferry's keys.
 if [ -n "$PY_CMD" ]; then
     $CONF unpoint
+    $CONF unregister-hook
 fi
 
 echo ""

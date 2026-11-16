@@ -102,16 +102,21 @@ python3 FERRY/tools/ferry-canary
 Exit 0 means one real request went through **this mind's own** proxy. Run by a
 person, on purpose: the proof is seen, not assumed.
 
-## 5. Does Claude Code run Ferry's hook? — **[OPEN: did NOT fire on Cairn's `--bg --resume`, 2026-11-16]**
-Restart the mind's session the way it normally runs. Then:
+## 5. Does Claude Code run Ferry's hook? — **[PENDING: re-measure on the settings hook]**
+*History: the old install made a plugin symlink, which this Claude Code does NOT
+load — Cairn measured no fire on `--bg --resume`, 2026-11-16. Install now writes
+the hook into `settings.json` `hooks.SessionStart` instead (Ferry `master` after
+that date). Older installs: `git pull`, then `bash install.sh` again.*
+
+Check it is registered, then restart the session the way it normally runs:
 ```bash
-tail -3 ~/.claude/rolling-context-hook.log
+grep -n 'hooks/start-proxy.sh' ~/.claude/settings.json      # must show Ferry's entry
+tail -3 ~/.claude/rolling-context-hook.log                 # after the restart
 ```
 * **A new line timestamped after the restart:** the hook fires, and Ferry
   restarts its own proxy at every session start.
-* **No new line:** install's plugin symlink is not loaded by this Claude Code.
-  Ferry works **until the proxy dies**, and nothing would restart it. Report it
-  to Crossing before going further.
+* **No new line:** report it to Crossing. Ferry still works until the proxy
+  dies; `bin/ferry-restart` brings it back by hand.
 
 ## 6. Live
 Work normally. The first curation happens near the trigger (about 100k tokens of

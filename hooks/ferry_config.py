@@ -265,6 +265,74 @@ def cmd_install():
         print(f"  {key} = {vals[key]}")
 
 
+# --- the SessionStart hook ------------------------------------------------
+# Registered straight into settings.json `hooks`. The plugin symlink install used
+# to make is NOT how this Claude Code loads plugins: Cairn measured the hook not
+# firing on --bg --resume (2026-11-16), so a dead proxy was never restarted. A
+# settings hook always loads, and it runs THIS clone's script -- the pulled code,
+# not a cached copy. Ferry's entry is the one whose command runs a
+# hooks/start-proxy.{sh,ps1}; nothing else in `hooks` is ever touched.
+REPO_ROOT = os.path.dirname(HERE)
+
+
+def hook_command():
+    if os.name == "nt":
+        script = os.path.join(REPO_ROOT, "hooks", "start-proxy.ps1")
+        return f'powershell -ExecutionPolicy Bypass -File "{script}"'
+    return "bash " + shlex.quote(os.path.join(REPO_ROOT, "hooks", "start-proxy.sh"))
+
+
+def _is_ferry_hook(h):
+    c = str((h or {}).get("command", "")).replace("\\", "/")
+    return "/hooks/start-proxy.sh" in c or "/hooks/start-proxy.ps1" in c
+
+
+def _drop_ferry_hooks(s):
+    """Remove Ferry's SessionStart entries; keep everyone else's. -> count removed."""
+    groups = (s.get("hooks") or {}).get("SessionStart") or []
+    removed, kept = 0, []
+    for g in groups:
+        inner = g.get("hooks") or []
+        mine = [h for h in inner if _is_ferry_hook(h)]
+        removed += len(mine)
+        rest = [h for h in inner if not _is_ferry_hook(h)]
+        if rest:
+            kept.append(dict(g, hooks=rest))
+        elif not mine:
+            kept.append(g)
+    if "hooks" in s and "SessionStart" in s["hooks"]:
+        if kept:
+            s["hooks"]["SessionStart"] = kept
+        else:
+            del s["hooks"]["SessionStart"]
+            if not s["hooks"]:
+                del s["hooks"]
+    return removed
+
+
+def cmd_register_hook():
+    s = load_settings()
+    _drop_ferry_hooks(s)
+    s.setdefault("hooks", {}).setdefault("SessionStart", []).append(
+        {"hooks": [{"type": "command", "command": hook_command(), "timeout": 30}]})
+    if not s["env"]:
+        del s["env"]
+    save_settings(s)
+    print(f"  SessionStart hook -> {hook_command()}")
+
+
+def cmd_unregister_hook():
+    if not os.path.exists(settings_path()):
+        return
+    s = load_settings()
+    n = _drop_ferry_hooks(s)
+    if not s["env"]:
+        del s["env"]
+    save_settings(s)
+    if n:
+        print(f"  removed Ferry's SessionStart hook ({n})")
+
+
 def cmd_point():
     vals, _, s = _checked()
     ours = proxy_url(vals["port"])
@@ -439,6 +507,10 @@ def main(argv):
         cmd_unpoint()
     elif cmd == "withdraw":
         cmd_withdraw()
+    elif cmd == "register-hook":
+        cmd_register_hook()
+    elif cmd == "unregister-hook":
+        cmd_unregister_hook()
     elif cmd == "holds-port":
         sys.exit(0 if holds_port(int(argv[2]), int(argv[3])) else 1)
     elif cmd == "is-proxy":

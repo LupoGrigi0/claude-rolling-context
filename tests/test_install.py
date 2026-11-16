@@ -337,8 +337,15 @@ try:
     env = b.settings_env() or {}
     check("settings.json written under CLAUDE_CONFIG_DIR, NOT $HOME/.claude",
           env and not (b.home / ".claude" / "settings.json").exists())
-    check("plugin linked under CLAUDE_CONFIG_DIR",
-          (b.cfg / "plugins" / "rolling-context").is_symlink())
+    # The hook lives in settings.json `hooks` (a plugin symlink is not loaded by
+    # this Claude Code -- Cairn, 2026-11-16).
+    s_full = json.loads((b.cfg / "settings.json").read_text())
+    check("SessionStart hook registered in CLAUDE_CONFIG_DIR settings, running this repo's script",
+          any("/hooks/start-proxy.sh" in h.get("command", "") and str(REPO) in h.get("command", "")
+              for g in s_full.get("hooks", {}).get("SessionStart", []) for h in g.get("hooks", [])),
+          s_full.get("hooks"))
+    check("no plugin symlink is made any more",
+          not (b.cfg / "plugins" / "rolling-context").exists())
     check("per-mind port honoured: the pid we started holds it",
           started and b.conf("holds-port", started, port).returncode == 0)
     check("settings hold ONLY ANTHROPIC_BASE_URL + MARK",
