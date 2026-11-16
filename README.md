@@ -98,6 +98,8 @@ never writes this file.
 | `port` | **none — required** | The proxy's loopback port, one per mind |
 | `upstream` | `https://api.anthropic.com` | Where the proxy forwards. The ONE route. |
 | `data_dir` | `~/ferry-data` | The mind's archive |
+| `trigger` | `800000` | Curate when context passes this many tokens (production minds run 1M windows) |
+| `target` | `600000` | ...down to about this. Must be below `trigger` |
 
 Curation mode is always `ferry`. Env vars and `settings.json` are **not** config
 sources; the hook only uses env vars to hand these values to the proxy it starts.

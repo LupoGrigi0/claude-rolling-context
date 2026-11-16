@@ -55,10 +55,16 @@ FIELDS = {
     "port": "ROLLING_CONTEXT_PORT",
     "data_dir": "FERRY_DATA",
     "upstream": "ROLLING_CONTEXT_UPSTREAM",
+    "trigger": "ROLLING_CONTEXT_TRIGGER",   # curate when context passes this (tokens)
+    "target": "ROLLING_CONTEXT_TARGET",     # ...down to about this
 }
 DEFAULTS = {
     "data_dir": os.path.join(os.path.expanduser("~"), "ferry-data"),
     "upstream": DEFAULT_UPSTREAM,
+    # Production minds run 1M windows (Lupo, 2026-11-16: high watermark 800k).
+    # The proxy's own 100k/40k defaults suit a 200k window, not a family mind.
+    "trigger": "800000",
+    "target": "600000",
 }
 CURATION = "ferry"           # always, for an installed Ferry -- not a field
 # The base URL Ferry itself wrote. Uninstall removes ANTHROPIC_BASE_URL only if
@@ -139,6 +145,12 @@ def config_error(vals):
     err = port_error(vals["port"])
     if err:
         return err
+    for k in ("trigger", "target"):
+        if not vals[k].isdigit() or int(vals[k]) <= 0:
+            return f'ferry "{k}" {vals[k]!r} is not a positive whole number of tokens'
+    if int(vals["target"]) >= int(vals["trigger"]):
+        return (f'ferry "target" ({vals["target"]}) must be below "trigger" '
+                f'({vals["trigger"]}) -- curation reduces context FROM trigger TO target')
     u = urlparse(vals["upstream"])
     if u.scheme not in ("http", "https") or not u.hostname:
         return f'ferry "upstream" {vals["upstream"]!r} is not an http(s) URL'

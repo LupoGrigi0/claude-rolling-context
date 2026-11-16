@@ -522,12 +522,17 @@ class FerryCurationProducer:
 
 # Framing text used by the compressor's envelope in curation mode —
 # honest about what the payload IS (pointers + verbatim, not a summary).
+# ABSOLUTE path: the mind's Bash tool may not have ~/.local/bin on PATH, and a
+# bare "ferry-fetch" then reads as "my archive is unreachable" (WakeTest2-b0ec,
+# first production passenger, 2026-11-16).
+FERRY_FETCH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "bin", "ferry-fetch")
 CURATION_FRAMING_USER = (
     "The above is your carried context: verbatim identity blocks and a "
     "pointer index to archived turns (stored verbatim, fetchable). "
     "Nothing was summarized; earlier turns were moved, not lost. "
     "To recall any archived turn in full, run: "
-    "ferry-fetch '<pointer>' (e.g. ferry-fetch 'archive_20260811.jsonl#L3') "
+    f"{FERRY_FETCH} '<pointer>' (e.g. {FERRY_FETCH} 'archive_20260811.jsonl#L3') "
     "via your Bash tool. Continue from where we left off."
 )
 CURATION_FRAMING_ACK = (
