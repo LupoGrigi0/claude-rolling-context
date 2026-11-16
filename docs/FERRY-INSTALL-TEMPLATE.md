@@ -90,9 +90,10 @@ the output.** A refusal names its reason and changes nothing.
   from Python, which the bg Edit-tool guard does not touch.
 - `WARNING: ~/.local/bin is not on PATH` is expected on .nexus and non-blocking — curated
   prefixes name `ferry-fetch` by absolute path.
-- **The CURRENT session is not routed yet.** `ANTHROPIC_BASE_URL` is read at session start,
-  so Lupo relaunches the mind (land, then `claude --bg --resume <uuid>` — no new flags, so no
-  fork). Step 5 checks the hook on that relaunch.
+- **The running session appears to pick up the new base URL live** (Cairn, 2026-11-16:
+  `metrics.csv` logged ~493k-context requests through the proxy 25 s after install, 3 min
+  before any relaunch). Check `tail ~/ferry-data/metrics.csv` instead of assuming either way.
+  A relaunch (land, then `claude --bg --resume <uuid>`, no new flags) is still needed for step 5.
 
 ## 4. Prove the route — the canary
 ```bash
@@ -101,7 +102,7 @@ python3 FERRY/tools/ferry-canary
 Exit 0 means one real request went through **this mind's own** proxy. Run by a
 person, on purpose: the proof is seen, not assumed.
 
-## 5. Does Claude Code run Ferry's hook? — **[PENDING: unmeasured]**
+## 5. Does Claude Code run Ferry's hook? — **[OPEN: did NOT fire on Cairn's `--bg --resume`, 2026-11-16]**
 Restart the mind's session the way it normally runs. Then:
 ```bash
 tail -3 ~/.claude/rolling-context-hook.log
@@ -134,4 +135,4 @@ archive stays in `~/ferry-data`. See `docs/RUNBOOK.md` for the 3am page.
 ## Run log — append one line per run, in this file, committed
 | date | INSTANCE | who | result | template fixes made |
 |---|---|---|---|---|
-| 2026-11-16 | Cairn-2001 | Cairn (self, from --bg) + Lupo | install OK, port 5631, trigger 700k/target 500k, canary OK; relaunch pending | step 1 trigger/target; step 3 subshell cd, bg-can-install, PATH note, relaunch note |
+| 2026-11-16 | Cairn-2001 | Cairn (self, from --bg) + Lupo | install OK, port 5631, trigger 700k/target 500k, canary OK; routed (metrics growing); SessionStart hook did NOT fire on --bg --resume | step 1 trigger/target; step 3 subshell cd, bg-can-install, PATH note, relaunch note |
