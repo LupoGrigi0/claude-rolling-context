@@ -76,6 +76,9 @@ srv = importlib.util.module_from_spec(spec)
 sys.modules["ferry_server"] = srv
 spec.loader.exec_module(srv)
 
+# /health reports the module's CURATION_MODE; the healthy control is a Ferry-mode
+# proxy. (Set on the module, not the env, so the proxy's curation path is untouched.)
+srv.CURATION_MODE = "ferry"
 proxy = srv.ThreadedHTTPServer(("127.0.0.1", 0), srv.ProxyHandler)
 proxy_port = start(proxy)
 
@@ -98,6 +101,15 @@ try:
     check("healthy proxy -> says OK", out.startswith("ferry-canary: OK"), True)
     check("upstream's status reached the canary", "HTTP 401" in out, True)
     check("no header or body value leaks into output", SECRET in out, False)
+
+    # ---- not in Ferry mode: up and forwarding, but it would PARAPHRASE ----
+    srv.CURATION_MODE = ""
+    code, out = canary("--port", str(proxy_port), "--data", data)
+    check("summarize-mode proxy -> canary FAILS", code != 0, True)
+    check("...and says why (not 'ferry' mode)", "not 'ferry'" in out, True)
+    srv.CURATION_MODE = "ferry"
+    code, out = canary("--port", str(proxy_port), "--data", data)
+    check("back in ferry mode -> exit 0 again (control)", code, 0)
 
     # ---- S6: each wrong world must NOT be OK --------------------------------
     code, out = canary("--port", str(free_closed_port()), "--data", data)

@@ -34,7 +34,7 @@ try:
     import metrics
 except Exception:                                   # pragma: no cover
     metrics = None
-from compressor import RollingCompressor
+from compressor import RollingCompressor, CURATION_MODE
 
 # The debug log ROTATES (ship item S9). It is DEBUG-level and a proxy can
 # run for weeks; an unbounded file in a mind's home is a disk-full waiting for
@@ -1174,6 +1174,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
             "trigger_tokens": TRIGGER_TOKENS,
             "target_tokens": TARGET_TOKENS,
             "summarizer_model": SUMMARIZER_MODEL or "(session model)",
+            # "ferry" = verbatim curation (Ferry). Anything else is upstream rolling-
+            # context SUMMARISATION -- a paraphrase. summarizer_mode below cannot tell
+            # the two apart; this field exists so nobody has to guess (2026-11-16).
+            "curation_mode": CURATION_MODE or "summarize",
             "summarizer_mode": "native" if NATIVE_MODE else f"flattened/{SUMMARIZER_FORMAT}",
             "upstream_url": UPSTREAM_URL,
             "compression_count": compressor.compression_count,

@@ -134,6 +134,15 @@ def main():
         done(FAIL, f"curation disabled (thrash lockout) on port {port}: "
                    f"{health.get('lockout_note') or 'no note'} -- the mind is on "
                    f"native compaction; see docs/RUNBOOK.md")
+    # Up and forwarding is not enough: a proxy NOT in ferry mode SUMMARISES the
+    # mind's oldest turns -- a paraphrase. First production install, 2026-11-16:
+    # nothing could tell which mode a live proxy was in.
+    if "curation_mode" not in health:
+        done(COULD_NOT_LOOK, f"/health on port {port} does not report curation_mode "
+                             f"(a Ferry older than 2026-11-16?)")
+    if health["curation_mode"] != "ferry":
+        done(FAIL, f"proxy on port {port} is in {health['curation_mode']!r} mode, not 'ferry' "
+                   f"-- it would SUMMARISE (paraphrase) this mind's context")
 
     # 2. A REAL request through the forwarding path. 502 is the proxy saying it
     # could not reach upstream; any other 5xx is upstream unable to serve.
