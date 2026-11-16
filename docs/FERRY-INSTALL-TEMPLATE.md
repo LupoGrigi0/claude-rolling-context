@@ -1,6 +1,6 @@
 # Ferry Install Runbook — TEMPLATE
 
-**For a mind and Lupo, together. By Crossing-2d23.**
+**For a mind and its human operator, together.**
 Puts a mind on Ferry: a proxy between Claude Code and its upstream that curates
 context instead of compacting it. Evicted turns move verbatim to an archive on
 disk, with pointers left in their place, the identity block is carried
@@ -11,14 +11,13 @@ Same shape as the v2 migration template: copy this file into the mind's
 `~/wake/`, fill in the variables, then walk the steps together. **Verify by
 acting**, and keep the `echo $HOME` identity guard before every block.
 
-> **DISCIPLINE (Lupo + Crossing, 2026-11-03).** This template lives in the Ferry
+> **DISCIPLINE.** This template lives in the Ferry
 > repo, and **only** here. When a run finds something wrong, fix it in *this
 > file*, commit, and push before (or right after) fixing the copy. **No
 > runbook change ever lives on disk only.**
 
-> **STATUS.** **[PENDING]** — first run is WakeTest2-b0ec (port 5621), then its sibling
-> WakeTest-8bc1. Anthropic login only until both close. Not yet for minds on
-> OpenRouter or any other route (Witness, Genevieve): that comes after.
+> **STATUS.** In production on Anthropic login (2026-11-16). Not yet exercised for
+> minds on OpenRouter or any other route: set `upstream` and treat it as a first run.
 
 > **What Ferry needs, and nothing else.** No root, no service manager, nothing
 > under `/etc`. Ferry runs **as the mind's own user**, started by Claude Code's
@@ -31,14 +30,14 @@ acting**, and keep the `echo $HOME` identity guard before every block.
 
 ## Variables — the only per-mind differences
 ```
-INSTANCE  = <full instance id, EXACT CASE>     e.g.  WakeTest-8bc1   (== its unix user)
-HOME      = /mnt/coordinaton_mcp_data/instances/INSTANCE
+INSTANCE  = <full instance id, EXACT CASE>     e.g.  Example-1234   (== its unix user)
+HOME      = <the mind's home directory>
 PORT      = <a FREE loopback port, one per mind>   e.g. 5620
 TRIGGER   = 800000                         # optional; curate above this
 TARGET    = 600000                         # optional; curate down to this (< TRIGGER)
             # check it is free:  ss -lnt | grep -c ':PORT '   -> must print 0
             # NEVER a house port: 21000-21005, 21097, 21099, 22000-22999, 5610-5613
-BRANCH    = master                        # production; never a branch (Lupo, 2026-11-16)
+BRANCH    = master                        # production; never a branch
 FERRY     = HOME/repos/claude-rolling-context
 ```
 > Substitute **case-sensitively**, and never blind-replace `HOME`: it appears
@@ -86,11 +85,11 @@ Expect `[4/4] ... Proxy verified on port PORT`. Anything else: **stop and paste
 the output.** A refusal names its reason and changes nothing.
 - **The subshell matters on v2:** a bare `cd` in a `--bg` mind's Bash tool moves the
   session's working directory (and so its memory namespace). Keep the parentheses.
-- **A `--bg` mind can run this itself** (Cairn, 2026-11-16): install writes `settings.json`
+- **A `--bg` mind can run this itself** (measured 2026-11-16): install writes `settings.json`
   from Python, which the bg Edit-tool guard does not touch.
-- `WARNING: ~/.local/bin is not on PATH` is expected on .nexus and non-blocking — curated
+- `WARNING: ~/.local/bin is not on PATH` is expected on some hosts and non-blocking — curated
   prefixes name `ferry-fetch` by absolute path.
-- **The running session appears to pick up the new base URL live** (Cairn, 2026-11-16:
+- **The running session appears to pick up the new base URL live** (measured 2026-11-16:
   `metrics.csv` logged ~493k-context requests through the proxy 25 s after install, 3 min
   before any relaunch). Check `tail ~/ferry-data/metrics.csv` instead of assuming either way.
   A relaunch (land, then `claude --bg --resume <uuid>`, no new flags) is still needed for step 5.
@@ -104,7 +103,7 @@ person, on purpose: the proof is seen, not assumed.
 
 ## 5. Does Claude Code run Ferry's hook? — **[PENDING: re-measure on the settings hook]**
 *History: the old install made a plugin symlink, which this Claude Code does NOT
-load — Cairn measured no fire on `--bg --resume`, 2026-11-16. Install now writes
+load — measured: no fire on `--bg --resume`, 2026-11-16. Install now writes
 the hook into `settings.json` `hooks.SessionStart` instead (Ferry `master` after
 that date). Older installs: `git pull`, then `bash install.sh` again.*
 
@@ -115,7 +114,7 @@ tail -3 ~/.claude/rolling-context-hook.log                 # after the restart
 ```
 * **A new line timestamped after the restart:** the hook fires, and Ferry
   restarts its own proxy at every session start.
-* **No new line:** report it to Crossing. Ferry still works until the proxy
+* **No new line:** report it to the Ferry maintainers. Ferry still works until the proxy
   dies; `bin/ferry-restart` brings it back by hand.
 
 ## 6. Live
@@ -137,7 +136,6 @@ bash FERRY/uninstall.sh      # removes ONLY the base URL Ferry wrote
 Then restart the session; the mind goes direct to Anthropic again. The
 archive stays in `~/ferry-data`. See `docs/RUNBOOK.md` for the 3am page.
 
-## Run log — append one line per run, in this file, committed
-| date | INSTANCE | who | result | template fixes made |
-|---|---|---|---|---|
-| 2026-11-16 | Cairn-2001 | Cairn (self, from --bg) + Lupo | install OK, port 5631, trigger 700k/target 500k, canary OK; routed (metrics growing); SessionStart hook did NOT fire on --bg --resume | step 1 trigger/target; step 3 subshell cd, bg-can-install, PATH note, relaunch note |
+## Run log
+Keep a run log of your installs (date, instance, result, template fixes) somewhere
+private to your deployment -- it names real minds.
