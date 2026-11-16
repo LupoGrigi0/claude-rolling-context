@@ -34,6 +34,8 @@ acting**, and keep the `echo $HOME` identity guard before every block.
 INSTANCE  = <full instance id, EXACT CASE>     e.g.  WakeTest-8bc1   (== its unix user)
 HOME      = /mnt/coordinaton_mcp_data/instances/INSTANCE
 PORT      = <a FREE loopback port, one per mind>   e.g. 5620
+TRIGGER   = 800000                         # optional; curate above this
+TARGET    = 600000                         # optional; curate down to this (< TRIGGER)
             # check it is free:  ss -lnt | grep -c ':PORT '   -> must print 0
             # NEVER a house port: 21000-21005, 21097, 21099, 22000-22999, 5610-5613
 BRANCH    = master                        # production; never a branch (Lupo, 2026-11-16)
@@ -59,10 +61,13 @@ everything else untouched:
 python3 - <<'EOF'
 import json, os; p = os.path.expanduser("~/preferences.json")
 d = json.load(open(p)) if os.path.exists(p) else {}
-d["ferry"] = {"port": PORT}
+d["ferry"] = {"port": PORT, "trigger": TRIGGER, "target": TARGET}
 json.dump(d, open(p, "w"), indent=2); print(d["ferry"])
 EOF
 ```
+`TRIGGER` = curate when context passes this (default `800000`); `TARGET` = curate down to about
+this (default `600000`, must be below `TRIGGER`). Omit either to take the default — but write them
+explicitly so the mind can see its own watermarks. (Field table: PILOTS-GUIDE-TO-INDEPENDENCE-2 §12.)
 *Not on Anthropic?* Add `"upstream": "<url>"`. Install **refuses** without it if
 the mind already routes elsewhere, so a key is never forwarded to the wrong
 provider. (Not covered by this runbook yet.)
@@ -75,10 +80,19 @@ git -C FERRY log --oneline -1
 
 ## 3. Install
 ```bash
-cd FERRY && bash install.sh
+( cd FERRY && bash install.sh )
 ```
 Expect `[4/4] ... Proxy verified on port PORT`. Anything else: **stop and paste
 the output.** A refusal names its reason and changes nothing.
+- **The subshell matters on v2:** a bare `cd` in a `--bg` mind's Bash tool moves the
+  session's working directory (and so its memory namespace). Keep the parentheses.
+- **A `--bg` mind can run this itself** (Cairn, 2026-11-16): install writes `settings.json`
+  from Python, which the bg Edit-tool guard does not touch.
+- `WARNING: ~/.local/bin is not on PATH` is expected on .nexus and non-blocking — curated
+  prefixes name `ferry-fetch` by absolute path.
+- **The CURRENT session is not routed yet.** `ANTHROPIC_BASE_URL` is read at session start,
+  so Lupo relaunches the mind (land, then `claude --bg --resume <uuid>` — no new flags, so no
+  fork). Step 5 checks the hook on that relaunch.
 
 ## 4. Prove the route — the canary
 ```bash
@@ -120,3 +134,4 @@ archive stays in `~/ferry-data`. See `docs/RUNBOOK.md` for the 3am page.
 ## Run log — append one line per run, in this file, committed
 | date | INSTANCE | who | result | template fixes made |
 |---|---|---|---|---|
+| 2026-11-16 | Cairn-2001 | Cairn (self, from --bg) + Lupo | install OK, port 5631, trigger 700k/target 500k, canary OK; relaunch pending | step 1 trigger/target; step 3 subshell cd, bg-can-install, PATH note, relaunch note |
