@@ -16,8 +16,8 @@ acting**, and keep the `echo $HOME` identity guard before every block.
 > file*, commit, and push before (or right after) fixing the copy. **No
 > runbook change ever lives on disk only.**
 
-> **STATUS.** **[PENDING]** — first run is WakeTest-8bc1, then its sibling
-> WakeTest2-b0ec. Anthropic login only until both close. Not yet for minds on
+> **STATUS.** **[PENDING]** — first run is WakeTest2-b0ec (port 5621), then its sibling
+> WakeTest-8bc1. Anthropic login only until both close. Not yet for minds on
 > OpenRouter or any other route (Witness, Genevieve): that comes after.
 
 > **What Ferry needs, and nothing else.** No root, no service manager, nothing
@@ -36,7 +36,7 @@ HOME      = /mnt/coordinaton_mcp_data/instances/INSTANCE
 PORT      = <a FREE loopback port, one per mind>   e.g. 5620
             # check it is free:  ss -lnt | grep -c ':PORT '   -> must print 0
             # NEVER a house port: 21000-21005, 21097, 21099, 22000-22999, 5610-5613
-BRANCH    = ferry/ship-installable        # until merged; then: master
+BRANCH    = master                        # production; never a branch (Lupo, 2026-11-16)
 FERRY     = HOME/repos/claude-rolling-context
 ```
 > Substitute **case-sensitively**, and never blind-replace `HOME`: it appears
