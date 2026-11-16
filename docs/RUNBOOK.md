@@ -43,31 +43,45 @@ Also: `[FERRY] ERROR: ...` at the top of the mind's session is the hook failing 
 
 Restore later: `bash install.sh` again, canary, restart the session.
 
-## 3. Restart the proxy
+## 3. Restart the proxy — the mind can do this itself
 
-**Restarting a proxy is Lupo's call** — the mind is mid-session on it.
-The next session start restarts it by itself (the hook). By hand, as the user:
+Ferry is its own process. Claude Code only knows `127.0.0.1:<port>`, which does
+not change when the proxy restarts, and curation state is on disk — so **the
+mind does not need landing.** Run from the mind's own Bash tool, nothing is in
+flight (its last request finished; its next leaves after this returns):
 
 ```sh
-P=<dir of S>/rolling-context-proxy.pid
-cat /proc/$(cat $P)/cmdline | tr '\0' ' '     # MUST be ... server.py — check before any kill
-kill $(cat $P)
-bash ~/claude-rolling-context/hooks/start-proxy.sh   # starts, verifies the port, points S
+~/repos/claude-rolling-context/bin/ferry-restart
 ```
 
-Never kill by pattern (`pkill -f server.py` kills other minds' proxies).
+It stops only **this user's** Ferry `server.py` on the configured port (anything
+else on the port is refused, never killed), starts the new proxy through the
+hook, verifies the port, and runs the canary. Exit 0 = serving, in Ferry mode.
+Use it after `git pull`, or after editing the `ferry` block. Never `pkill -f
+server.py` — that kills other minds' proxies.
 
 **"does not match preferences.json"** at session start: you changed `ferry.upstream`
 or `data_dir`, but the running proxy still has the old one. The hook has taken
-Ferry's pointer back (the session runs direct). Restart the proxy (above).
+Ferry's pointer back (the session runs direct). Run `ferry-restart`.
+
+### The watermark
+
+`~/preferences.json` → `"ferry"`: `trigger` (default `800000`) is when Ferry
+curates; `target` (default `600000`) is about where it curates down to. Must be
+`target < trigger`. Edit, then `ferry-restart`. Check what is running:
+
+```sh
+curl -s 127.0.0.1:<port>/health | grep -oE '"(curation_mode|trigger_tokens|target_tokens)": [^,]+'
+```
+`curation_mode` must be `"ferry"`. Anything else **summarises** (paraphrases).
 
 ## 4. Thrash lockout ("curation disabled")
 
-The unevictable floor (system prompt + tools + CLAUDE.md) is above
-`ROLLING_CONTEXT_TARGET`; Ferry passes requests through untouched and clears
-itself when the context changes enough. Not an emergency. `grep -n "CURATION
-DISABLED" <debug log>` names the floor. Fix: `env.ROLLING_CONTEXT_TARGET` above
-it in `S`, then §3.
+The unevictable floor (system prompt + tools + CLAUDE.md) is above `target`;
+Ferry passes requests through untouched and clears itself when the context
+changes enough. Not an emergency. `grep -n "CURATION DISABLED" <debug log>`
+names the floor. Fix: raise `target` in the `ferry` block above it, then
+`ferry-restart`.
 
 ## 5. Install / hook refuses: "routes this mind to ..."
 

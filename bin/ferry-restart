@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# ferry-restart — bounce THIS mind's Ferry proxy, safely, without landing the mind.
+#
+# Claude Code only knows "send to 127.0.0.1:<port>". That URL does not change when
+# the proxy behind it restarts, and Ferry persists its curation state to disk
+# (proxy-state.json), so the mind keeps running. Run it from the mind's own Bash
+# tool and nothing is in flight: the mind's last request has finished and its next
+# one leaves only after this returns, by which time the new proxy is listening.
+# Use it after `git pull`, or after changing the "ferry" block in ~/preferences.json.
+#
+#   1. read the port from ~/preferences.json (the ONE config source)
+#   2. the process on it must be THIS user's Ferry server.py -- anything else is
+#      refused, never killed (a wrong kill can take another mind's proxy)
+#   3. stop it, wait for the port to free
+#   4. start the new proxy through the ONE launcher (hooks/start-proxy.sh), which
+#      verifies its own pid holds the port
+#   5. prove it: tools/ferry-canary (this mind, its own proxy, Ferry mode)
+#
+# Exit 0 only when step 5 passes. Rollback if it fails: docs/RUNBOOK.md.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+CONF="python3 $HERE/hooks/ferry_config.py"
+die() { echo "ferry-restart: $1" >&2; exit 1; }
+
+conf=$($CONF env) || die "could not read Ferry config"
+eval "$conf"
+[ -z "${FERRY_CONFIG_ERROR:-}" ] || die "config: $FERRY_CONFIG_ERROR"
+PORT="$ROLLING_CONTEXT_PORT"
+
+PID=$($CONF who-holds "$PORT" 2>/dev/null) || PID=""
+if [ -n "$PID" ]; then
+    $CONF is-proxy "$PID" || die "port $PORT is held by pid $PID, which is not a Ferry server.py -- refusing to touch it"
+    echo "ferry-restart: stopping Ferry pid $PID on port $PORT"
+    kill "$PID" || die "could not stop pid $PID"
+    for _ in $(seq 1 50); do
+        $CONF holds-port "$PID" "$PORT" 2>/dev/null || break
+        sleep 0.2
+    done
+    $CONF holds-port "$PID" "$PORT" 2>/dev/null && die "pid $PID still holds port $PORT after 10 s"
+elif ss -lnt 2>/dev/null | grep -q "127.0.0.1:$PORT "; then
+    die "port $PORT is held by a process this user does not own -- refusing"
+else
+    echo "ferry-restart: no proxy was running on port $PORT; starting one"
+fi
+
+bash "$HERE/hooks/start-proxy.sh" || die "the new proxy did not start; see ~/.claude/rolling-context-hook.log"
+python3 "$HERE/tools/ferry-canary" || die "new proxy started but the canary FAILED -- see above"
+echo "ferry-restart: OK -- Ferry is serving on port $PORT (pid $($CONF who-holds "$PORT"))"
