@@ -839,35 +839,10 @@ def _metrics_off_reason():
     return metrics.disabled_reason() or "unknown"
 
 
-# FERRY_WINDOW, if set, labels the metrics rows. (The comment that stood here
-# said the window is "nowhere in the request" -- false since measured, below.)
+# The model's real context window is nowhere in the request or the response;
+# set FERRY_WINDOW to record it (blank otherwise — a guessed window would
+# turn every "% of context used" chart into fiction).
 _window = os.environ.get("FERRY_WINDOW") or None
-
-# THE WINDOW IS IN THE REQUEST (measured 2026-11-16, Claude Code 2.1.285): a 1M
-# session adds "context-1m-<date>" to anthropic-beta; the model id is identical
-# either way. A session that comes back on 200k with Ferry's trigger at 800k can
-# NEVER be curated -- it hits the wall, and from inside "88%" looks normal (Forge,
-# 2026-11-17). Alarm when a request is near ITS OWN wall and the trigger is above
-# that wall. Side traffic on 200k (haiku relays, subagents) is small, so quiet.
-WALL_FRACTION = 0.8
-_wall_alarm = None   # {window, context_tokens, trigger_tokens, at}: true when written
-
-
-def _window_of(beta):
-    return 1_000_000 if "context-1m" in (beta or "") else 200_000
-
-
-def _check_wall(beta, total_input, log):
-    global _wall_alarm
-    w = _window_of(beta)
-    if total_input and TRIGGER_TOKENS > w and total_input >= WALL_FRACTION * w:
-        if _wall_alarm is None:
-            log.error(f"[FERRY] WALL: request at {total_input:,} tokens on a {w:,} window, "
-                      f"but Ferry curates at {TRIGGER_TOKENS:,} -- it can never curate this "
-                      f"session. Is the session on its 1M model? (e.g. /model opus[1m])")
-        _wall_alarm = {"window": w, "context_tokens": total_input,
-                       "trigger_tokens": TRIGGER_TOKENS,
-                       "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 if _metrics and store.compressions:
     # Restored state, not a cold boot: the pointer index survived, so the
     # token curve continues rather than starting over.
@@ -1203,7 +1178,6 @@ class ProxyHandler(BaseHTTPRequestHandler):
             # context SUMMARISATION -- a paraphrase. summarizer_mode below cannot tell
             # the two apart; this field exists so nobody has to guess (2026-11-16).
             "curation_mode": CURATION_MODE or "summarize",
-            "wall_alarm": _wall_alarm,
             "summarizer_mode": "native" if NATIVE_MODE else f"flattened/{SUMMARIZER_FORMAT}",
             "upstream_url": UPSTREAM_URL,
             "compression_count": compressor.compression_count,
@@ -1523,7 +1497,6 @@ class ProxyHandler(BaseHTTPRequestHandler):
             if OBSERVED_FLOOR_ON and not estimated:
                 _note_observed_floor(total_input)
 
-            _check_wall(self.headers.get("anthropic-beta", ""), total_input, log)
             if _metrics:
                 marks = []
                 if estimated:

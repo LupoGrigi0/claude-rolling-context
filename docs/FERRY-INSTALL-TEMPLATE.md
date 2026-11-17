@@ -57,8 +57,8 @@ python3 --version          # 3.7+
 window it can never curate, and with auto-compact off the mind hits a hard wall
 (measured 2026-11-17: a relaunch came back on 200k). Run `/context` — the total
 must read `/1m`. If not: `/model opus[1m]` (and pin it in settings, not with a
-launch flag). The proxy also catches it: a request near a 200k wall with the
-trigger above it logs `[FERRY] WALL`, and the canary fails by name.
+launch flag). Ferry cannot detect this from the request (see the run log), so
+check it yourself after every relaunch.
 
 ### 0.5 If your home is a git repo: ignore the archive FIRST
 `~/ferry-data` is your session, archived verbatim. Never commit it.
