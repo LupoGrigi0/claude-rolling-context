@@ -53,6 +53,22 @@ ss -lnt | grep -c ':PORT '  # must print 0
 python3 --version          # 3.7+
 ```
 
+**Is the session on its 1M model?** Ferry's default trigger is 800k. On a 200k
+window it can never curate, and with auto-compact off the mind hits a hard wall
+(measured 2026-11-17: a relaunch came back on 200k). Run `/context` — the total
+must read `/1m`. If not: `/model opus[1m]` (and pin it in settings, not with a
+launch flag). The proxy also catches it: a request near a 200k wall with the
+trigger above it logs `[FERRY] WALL`, and the canary fails by name.
+
+### 0.5 If your home is a git repo: ignore the archive FIRST
+`~/ferry-data` is your session, archived verbatim. Never commit it.
+```bash
+git -C ~ rev-parse --show-toplevel 2>/dev/null && {
+  printf 'ferry-data/\nrepos/\n' >> ~/.gitignore
+  git -C ~ check-ignore -v ferry-data/x repos/x     # both lines must print
+}
+```
+
 ## 1. The config: one block, in the mind's own file
 `~/preferences.json` belongs to the mind. This merges the block in and leaves
 everything else untouched:
@@ -101,7 +117,12 @@ python3 FERRY/tools/ferry-canary
 Exit 0 means one real request went through **this mind's own** proxy. Run by a
 person, on purpose: the proof is seen, not assumed.
 
-## 5. Does Claude Code run Ferry's hook? — **[PENDING: re-measure on the settings hook]**
+**`upstream answered HTTP 401` next to `OK` is expected.** The canary sends no key
+on purpose — it proves the request crossed *your* proxy and reached the upstream,
+not that you are authenticated. Proof that *your session* is routed is your own
+model's request appearing in `tail ~/ferry-data/metrics.csv` as you work.
+
+## 5. Does Claude Code run Ferry's hook? — **MEASURED: yes, on a `--bg` resume (2026-11-17)**
 *History: the old install made a plugin symlink, which this Claude Code does NOT
 load — measured: no fire on `--bg --resume`, 2026-11-16. Install now writes
 the hook into `settings.json` `hooks.SessionStart` instead (Ferry `master` after
@@ -118,8 +139,8 @@ tail -3 ~/.claude/rolling-context-hook.log                 # after the restart
   dies; `bin/ferry-restart` brings it back by hand.
 
 ## 6. Live
-Work normally. The first curation happens near the trigger (about 100k tokens of
-context). Watch it:
+Work normally. The first curation happens near the trigger (`trigger`, default
+800k tokens of context). Watch it:
 ```bash
 tail -3 ~/ferry-data/metrics.csv
 ```

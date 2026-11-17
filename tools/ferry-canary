@@ -144,6 +144,13 @@ def main():
         done(FAIL, f"proxy on port {port} is in {health['curation_mode']!r} mode, not 'ferry' "
                    f"-- it would SUMMARISE (paraphrase) this mind's context")
 
+    if health.get("wall_alarm"):
+        a = health["wall_alarm"]
+        done(FAIL, f"WALL on port {port}: a request reached {a.get('context_tokens')} tokens on a "
+                   f"{a.get('window')} window (at {a.get('at')}) but Ferry curates at "
+                   f"{a.get('trigger_tokens')} -- this session can never be curated. "
+                   f"Put the session on its 1M model, then ferry-restart.")
+
     # 2. A REAL request through the forwarding path. 502 is the proxy saying it
     # could not reach upstream; any other 5xx is upstream unable to serve.
     try:

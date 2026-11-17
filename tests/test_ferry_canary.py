@@ -111,6 +111,16 @@ try:
     code, out = canary("--port", str(proxy_port), "--data", data)
     check("back in ferry mode -> exit 0 again (control)", code, 0)
 
+    # ---- the window wall makes the canary FAIL, by name --------------------
+    srv._wall_alarm = {"window": 200000, "context_tokens": 176900,
+                       "trigger_tokens": 800000, "at": "2026-11-17T00:00:00Z"}
+    code, out = canary("--port", str(proxy_port), "--data", data)
+    check("wall alarm -> canary FAILS", code != 0, True)
+    check("...and names the WALL", "WALL" in out, True)
+    srv._wall_alarm = None
+    code, out = canary("--port", str(proxy_port), "--data", data)
+    check("alarm cleared -> exit 0 again (control)", code, 0)
+
     # ---- S6: each wrong world must NOT be OK --------------------------------
     code, out = canary("--port", str(free_closed_port()), "--data", data)
     check("nothing listening -> exit 1", code, 1)

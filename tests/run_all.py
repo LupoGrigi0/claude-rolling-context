@@ -55,9 +55,9 @@ ZERO_CHECK_ALLOWED = set()         # see ALLOW-LIST above. Keep it empty.
 ENV_BOUND = {
     "test_watch_stall_survives_pulse.py":
         "asserts a property of the smoothcurves deployment; box-bound by design",
-    "test_watch_deployed_matches_repo.py":
-        "compares deployed-vs-repo on smoothcurves; box-bound by design",
 }
+# test_watch_deployed_matches_repo.py retired 2026-11-16 with the ferry-watch
+# cron it guarded (the test proxies it watched were retired the same night).
 SUMMARY = re.compile(r'(\d+)\s+passed,\s+(\d+)\s+failed')
 
 def run(path):
