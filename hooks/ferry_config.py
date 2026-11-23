@@ -7,7 +7,11 @@ ONE SOURCE, per unix user, in the home: ~/preferences.json, key "ferry":
 
     {"ferry": {"port": 5701,                               REQUIRED, no default
                "upstream": "https://api.anthropic.com",    optional, this default
-               "data_dir": "/home/me/ferry-data"}}         optional, ~/ferry-data
+               "data_dir": "/home/me/ferry-data",          optional, ~/ferry-data
+               "settings": "/abs/.claude/settings.local.json"}}
+                    optional: the ONE settings.json Ferry writes its route and
+                    hook into. Default: Claude Code's user settings.json. Set it
+                    where one OS user runs more than this mind (see settings_path).
 
 Nothing else is a config source: not the process env, not settings.json `env`.
 Ferry runs AS THE USER, started by Claude Code's own SessionStart hook -- no
@@ -80,7 +84,40 @@ LEGACY_SEEDED = {"ROLLING_CONTEXT_TRIGGER": "100000", "ROLLING_CONTEXT_TARGET": 
 
 
 def settings_path():
+    """The settings.json Ferry writes its route and its hook into.
+
+    Default: Claude Code's user file, config_dir()/settings.json -- right when
+    each mind is its own unix user. preferences "settings" overrides it with one
+    absolute path, for a box where ONE user runs more than this mind (Windows,
+    lupos-lap): a project's .claude/settings.local.json routes only the sessions
+    launched in that directory, and leaves the user's other Claude processes
+    (sentinel probes, ringers, a human's own sessions) going direct.
+    A path that fails settings_error() never gets here: _checked refuses first."""
+    try:
+        p = load_prefs().get("settings")
+    except Exception:
+        p = None
+    if p:
+        return os.path.abspath(os.path.expanduser(str(p)))
     return os.path.join(config_dir(), "settings.json")
+
+
+def settings_error():
+    """'' if preferences "settings" is absent or usable, else why not."""
+    p = load_prefs().get("settings")
+    if p in (None, ""):
+        return ""
+    p = os.path.expanduser(str(p))
+    if not os.path.isabs(p):
+        return f'ferry "settings" {p!r} must be an absolute path'
+    if not p.endswith(".json"):
+        return f'ferry "settings" {p!r} must name a settings .json file'
+    if os.path.basename(os.path.dirname(p)) != ".claude":
+        return (f'ferry "settings" {p!r} must be inside a .claude directory, '
+                "or Claude Code will never read it")
+    if not os.path.isdir(os.path.dirname(p)):
+        return f'ferry "settings" directory {os.path.dirname(p)!r} does not exist'
+    return ""
 
 
 def load_settings():
@@ -97,7 +134,7 @@ def load_settings():
 
 
 def save_settings(s):
-    os.makedirs(config_dir(), exist_ok=True)
+    os.makedirs(os.path.dirname(settings_path()), exist_ok=True)
     with open(settings_path(), "w", encoding="utf-8") as f:
         json.dump(s, f, indent=2)
         f.write("\n")
@@ -219,7 +256,7 @@ def route_guard(s, prefs, port):
 def cmd_env():
     try:
         prefs, vals = load_prefs(), resolve()
-        err = config_error(vals)
+        err = config_error(vals) or settings_error()
         if not err:      # refuse BEFORE the hook starts anything
             s = load_settings()
             adopt_legacy(s["env"])
@@ -238,9 +275,12 @@ def _checked():
     """-> (vals, prefs, settings) or exit non-zero with the reason. Writes nothing."""
     try:
         prefs, vals = load_prefs(), resolve()
-        err = config_error(vals)
+        err = config_error(vals) or settings_error()
     except Exception as e:
         vals, err = None, f"config unreadable: {e}"
+    if err:              # before load_settings: a bad "settings" path is never read or written
+        print(f"  ERROR: {err}")
+        sys.exit(1)
     s = load_settings()
     adopt_legacy(s["env"])
     err = err or route_guard(s, prefs, vals["port"])

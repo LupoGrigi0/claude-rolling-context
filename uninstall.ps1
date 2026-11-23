@@ -109,6 +109,10 @@ if ($HavePy) {
     $r = Invoke-FerryConf @('unpoint')
     $r.Output | ForEach-Object { Write-Host $_ }
     if ($r.Code -ne 0) { Write-Host 'WARNING: settings.json NOT cleaned (see above).' }
+    # Twin of uninstall.sh: the hook install.ps1 registered, and nothing else in `hooks`.
+    $r = Invoke-FerryConf @('unregister-hook')
+    $r.Output | ForEach-Object { Write-Host $_ }
+    if ($r.Code -ne 0) { Write-Host "WARNING: Ferry's SessionStart hook NOT removed (see above)." }
 } else {
     Write-Host 'WARNING: Python not found, so settings.json was NOT cleaned. By hand: remove'
     Write-Host '  ANTHROPIC_BASE_URL (only if it is http://127.0.0.1:<your ferry port>) and every'
