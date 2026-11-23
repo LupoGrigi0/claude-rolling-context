@@ -42,8 +42,13 @@ function Initialize-FerryPython {
         $eap = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         try {
-            $real = & $exe @pre -c $probe 2>$null | Select-Object -First 1
+            # Collect FIRST, then take line 1. Piping a native command into
+            # `Select-Object -First 1` stops the pipeline early, and on Windows
+            # PowerShell 5.1 $LASTEXITCODE then reads -1 though Python exited 0
+            # (measured on lupos-lap, 2026-11-23: no Python was ever "found").
+            $out = & $exe @pre -c $probe 2>$null
             $code = $LASTEXITCODE
+            $real = @($out)[0]
         } catch {
             $real = $null; $code = 1
         } finally {
