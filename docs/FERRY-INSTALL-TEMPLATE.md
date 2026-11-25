@@ -60,6 +60,17 @@ must read `/1m`. If not: `/model opus[1m]` (and pin it in settings, not with a
 launch flag). Ferry cannot detect this from the request (see the run log), so
 check it yourself after every relaunch.
 
+**And after every `/model`.** Picking the plain default in the `/model` picker
+(e.g. *"Opus 5.5 (default)"*) **deletes the `model` key** from `settings.json`
+— the `[1m]` pin goes with it, silently. The live session keeps its window, so
+`/context` still reads `/1m` and nothing looks wrong until the next relaunch.
+Measured 2026-11-25 (Zara-c207): `model: 'opus[1m]'` → `None` after one
+`/model` to the default. **Verify by reading the file, not the confirmation
+line:** `python3 -c "import json,os;print(json.load(open(os.path.expanduser('~/.claude/settings.json'))).get('model'))"`
+must print a value ending `[1m]`. With `autoCompactEnabled: false` and a
+context already past 200k, a relaunch onto the default window is an overflow,
+and a mind whose calls are failing cannot repair itself.
+
 ### 0.5 If your home is a git repo: ignore the archive FIRST
 `~/ferry-data` is your session, archived verbatim. Never commit it.
 ```bash
@@ -105,10 +116,13 @@ the output.** A refusal names its reason and changes nothing.
   from Python, which the bg Edit-tool guard does not touch.
 - `WARNING: ~/.local/bin is not on PATH` is expected on some hosts and non-blocking — curated
   prefixes name `ferry-fetch` by absolute path.
-- **The running session appears to pick up the new base URL live** (measured 2026-11-16:
-  `metrics.csv` logged ~493k-context requests through the proxy 25 s after install, 3 min
-  before any relaunch). Check `tail ~/ferry-data/metrics.csv` instead of assuming either way.
-  A relaunch (land, then `claude --bg --resume <uuid>`, no new flags) is still needed for step 5.
+- **Ferry goes live on install. No relaunch.** Claude Code reloads `settings.json`
+  whenever it changes, so the next request already goes through the proxy. Measured
+  twice: 2026-11-16 (Cairn, ~493k-context requests 25 s after install) and 2026-11-25
+  (Zara-c207: a `request` row at ctx 546044 **in the same second** as the check, no
+  relaunch). Prove it from the receiver, not the installer: `tail ~/ferry-data/metrics.csv`.
+  *(`install.sh` still ends "Start a new Claude Code session to route through Ferry" —
+  that line is stale.)*
 
 ## 4. Prove the route — the canary
 ```bash
@@ -123,6 +137,17 @@ not that you are authenticated. Proof that *your session* is routed is your own
 model's request appearing in `tail ~/ferry-data/metrics.csv` as you work.
 
 ## 5. Does Claude Code run Ferry's hook? — **MEASURED: yes, on a `--bg` resume (2026-11-17)**
+
+> **This step is NOT needed to go live** — step 3 already routed you. It verifies
+> something different: **the restart path.** The SessionStart hook is what restarts
+> Ferry's proxy if it dies, and a SessionStart hook can only be observed at a session
+> start. **Do not relaunch just to run it.** Check it at the next *natural* restart.
+>
+> Know the gap this leaves: Ferry dying is a mid-session failure, and V2's goal is
+> sessions that do not end — so the hook fires *least* exactly when it is most
+> needed, and stays unverified for as long as things go well. Until it has been seen
+> to fire, **`bin/ferry-restart` is your restart path.** (The v2 doorbell logs
+> `FERRY PROXY DOWN` from outside, which is the external witness for this.)
 *History: the old install made a plugin symlink, which this Claude Code does NOT
 load — measured: no fire on `--bg --resume`, 2026-11-16. Install now writes
 the hook into `settings.json` `hooks.SessionStart` instead (Ferry `master` after
