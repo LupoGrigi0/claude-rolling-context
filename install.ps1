@@ -37,14 +37,21 @@ $cfg = Get-FerryEnv
 if ($null -eq $cfg) { Write-Host '  ERROR: ferry_config.py env failed. Install NOT complete.'; exit 1 }
 $ClaudeDir = $cfg['FERRY_CONFIG_DIR']
 
-# 3. Register plugin (a junction: no admin or Developer Mode needed)
-Write-Host '[3/4] Registering Claude Code plugin...'
-$PluginsDir = Join-Path $ClaudeDir 'plugins'
-$PluginLink = Join-Path $PluginsDir 'rolling-context'
-New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null
-Remove-FerryLink $PluginLink | Out-Null
-New-Item -ItemType Junction -Path $PluginLink -Value $ScriptDir | Out-Null
-Write-Host "  Plugin linked at $PluginLink"
+# 3. Register the SessionStart hook in settings.json -- that is what restarts a
+# dead proxy. (A plugin link is NOT loaded by this Claude Code: Cairn measured
+# it, 2026-11-16; install.sh switched then, this twin had not.) An old junction
+# from an earlier install is removed only if it is a link into a Ferry repo.
+Write-Host "[3/4] Registering Ferry's SessionStart hook..."
+$r = Invoke-FerryConf @('register-hook')
+$r.Output | ForEach-Object { Write-Host $_ }
+if ($r.Code -ne 0) { Write-Host '  could not register the hook. Install NOT complete.'; exit 1 }
+$PluginLink = Join-Path $ClaudeDir 'plugins\rolling-context'
+$old = Get-Item -LiteralPath $PluginLink -Force -ErrorAction SilentlyContinue
+if ($old -and ($old.Attributes -band [IO.FileAttributes]::ReparsePoint) -and
+        (Test-Path -LiteralPath (Join-Path $PluginLink 'hooks\start-proxy.ps1'))) {
+    Remove-FerryLink $PluginLink | Out-Null
+    Write-Host '  removed the old, unloaded plugin link'
+}
 
 # Every curated prefix tells the mind to run a bare `ferry-fetch`. Two shims in
 # ~\.local\bin: .cmd for cmd/PowerShell, extensionless sh for Git Bash (which
