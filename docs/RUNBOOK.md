@@ -43,9 +43,9 @@ Also: `[FERRY] ERROR: ...` at the top of the mind's session is the hook failing 
 3. **No restart needed:** Claude Code re-reads `S` when it changes — the next request
    goes direct. (Cairn's metrics show requests through the proxy 25 s after install
    wrote `S`, before any relaunch, 2026-11-16 — inferred from the receiver's record.)
-   If in doubt, restart the session. Never `claude --bg --resume` a running session — it forks.
+   Measured again on Windows 2026-11-25 (8 s). Never `claude --bg --resume` a running session — it forks.
 
-Restore later: `bash install.sh` again, canary, restart the session.
+Restore later: `bash install.sh` again, canary. No restart.
 
 ## 3. Restart the proxy — the mind can do this itself
 

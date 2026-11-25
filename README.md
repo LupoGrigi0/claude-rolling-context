@@ -131,11 +131,12 @@ The installer registers the plugin and starts the proxy through the
 SessionStart hook. The hook reuses a proxy of this user already on the port, or
 starts one and **verifies its own process holds the port** before pointing
 `ANTHROPIC_BASE_URL` at it; if not, it fails loudly and takes back only a base
-URL Ferry wrote. Start a new Claude Code session afterwards. Requires Python
+URL Ferry wrote. No restart is needed: current Claude Code re-reads `settings.json`
+live, so the next request goes through Ferry. Requires Python
 3.7+ (pure stdlib).
 
 **Rollback:** remove Ferry's `ANTHROPIC_BASE_URL` from `settings.json` (or run
-`uninstall.sh`), restart the session. See `docs/RUNBOOK.md`.
+`uninstall.sh`); the next request goes direct, no restart. See `docs/RUNBOOK.md`.
 
 ### Windows
 
@@ -148,7 +149,8 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
 Same design, same `hooks/ferry_config.py`; needs Python 3.8+. **Ported, untested
-on a Windows machine as of 2026-11-03.**
+on a Windows machine as of 2026-11-03.** First real Windows install: greywolf, 2026-11-25
+(three `install.ps1` fixes; see git log).
 
 ## How Compression Works
 

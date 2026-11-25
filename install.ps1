@@ -89,4 +89,4 @@ Write-Host "  FERRY_DATA               = $($cfg['FERRY_DATA'])"
 Write-Host "  settings.json            = $(Join-Path $ClaudeDir 'settings.json')"
 Write-Host ''
 Write-Host "Prove it once:  `"$($Script:FerryPy)`" `"$(Join-Path $ScriptDir 'tools\ferry-canary')`""
-Write-Host 'Start a new Claude Code session to route through Ferry.'
+Write-Host "No restart needed: the running session re-reads settings.json; check $(Join-Path $cfg['FERRY_DATA'] 'metrics.csv')."

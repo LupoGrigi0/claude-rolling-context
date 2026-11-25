@@ -117,7 +117,7 @@ if ($HavePy) {
     Write-Host 'WARNING: Python not found, so settings.json was NOT cleaned. By hand: remove'
     Write-Host '  ANTHROPIC_BASE_URL (only if it is http://127.0.0.1:<your ferry port>) and every'
     Write-Host "  ROLLING_CONTEXT_* key from the env block of $(Join-Path $ClaudeDir 'settings.json'),"
-    Write-Host '  then restart the session.'
+    Write-Host '  The next request then goes direct; no restart needed.'
 }
 
 Write-Host ''

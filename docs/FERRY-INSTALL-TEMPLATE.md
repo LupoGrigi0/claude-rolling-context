@@ -99,16 +99,23 @@ git -C FERRY log --oneline -1
 ```
 Expect `[4/4] ... Proxy verified on port PORT`. Anything else: **stop and paste
 the output.** A refusal names its reason and changes nothing.
+- **Installing on yourself? Arm the dead-man switch first:** `tools/ferry-deadman 900 &`, then
+  install; once your own request shows in `metrics.csv`, `tools/ferry-deadman keep`. If the
+  proxy breaks your route you can't type the fix, so it withdraws Ferry's base URL for you.
+  Test it only with `FERRY_DEADMAN_DRY=1`: the withdraw always hits the real settings.json.
 - **The subshell matters on v2:** a bare `cd` in a `--bg` mind's Bash tool moves the
   session's working directory (and so its memory namespace). Keep the parentheses.
 - **A `--bg` mind can run this itself** (measured 2026-11-16): install writes `settings.json`
   from Python, which the bg Edit-tool guard does not touch.
 - `WARNING: ~/.local/bin is not on PATH` is expected on some hosts and non-blocking — curated
   prefixes name `ferry-fetch` by absolute path.
-- **The running session appears to pick up the new base URL live** (measured 2026-11-16:
-  `metrics.csv` logged ~493k-context requests through the proxy 25 s after install, 3 min
-  before any relaunch). Check `tail ~/ferry-data/metrics.csv` instead of assuming either way.
-  A relaunch (land, then `claude --bg --resume <uuid>`, no new flags) is still needed for step 5.
+- **No restart is needed: the running session picks up the new base URL live.** Current
+  Claude Code re-reads `settings.json` when it changes (permissions, model routing, base URL),
+  so the next request goes through Ferry. Measured twice: 2026-11-16 on Linux (~493k-context
+  requests through the proxy 25 s after install, before any relaunch) and 2026-11-25 on
+  Windows (the mind's own request in `metrics.csv` 8 s after install). Still read the
+  receiver: `tail ~/ferry-data/metrics.csv`. (The old "start a new session" advice came from
+  historical Claude Code behaviour.) A relaunch is only needed to *test* step 5.
 
 ## 4. Prove the route — the canary
 ```bash
@@ -128,7 +135,8 @@ load — measured: no fire on `--bg --resume`, 2026-11-16. Install now writes
 the hook into `settings.json` `hooks.SessionStart` instead (Ferry `master` after
 that date). Older installs: `git pull`, then `bash install.sh` again.*
 
-Check it is registered, then restart the session the way it normally runs:
+Check it is registered. This step alone needs a restart, because it tests what happens
+*at* session start: restart the session the way it normally runs, when convenient:
 ```bash
 grep -n 'hooks/start-proxy.sh' ~/.claude/settings.json      # must show Ferry's entry
 tail -3 ~/.claude/rolling-context-hook.log                 # after the restart
@@ -154,7 +162,7 @@ the mind's own words. That report is the evidence.
 ```bash
 bash FERRY/uninstall.sh      # removes ONLY the base URL Ferry wrote
 ```
-Then restart the session; the mind goes direct to Anthropic again. The
+No restart: the next request goes direct to Anthropic again (settings.json is re-read live). The
 archive stays in `~/ferry-data`. See `docs/RUNBOOK.md` for the 3am page.
 
 ## Run log

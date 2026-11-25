@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# ferry-deadman -- a dead-man switch for installing Ferry on yourself.
+#
+# A mind that installs Ferry is changing its own route mid-session. If the proxy
+# breaks the route, the mind cannot fix it: its next request never arrives. So
+# arm this FIRST, in the background, then install. It waits; if the mind has not
+# shown it is alive by then, it withdraws ONLY the base URL Ferry wrote
+# (`ferry_config.py withdraw`), and since settings.json is re-read live the next
+# request goes direct to the upstream again. Nothing else is touched.
+#
+#   tools/ferry-deadman 900 &          # arm: 15 minutes (default 600 s)
+#   bash install.sh                    # or install.ps1 on Windows
+#   ... see your own request in ~/ferry-data/metrics.csv, then:
+#   tools/ferry-deadman keep           # disarm: "I'm alive, Ferry stays"
+#
+# Pure bash + the repo's Python; Linux, macOS, and Git Bash on Windows.
+#
+# TESTING IT: FERRY_DATA moves only the keep/log files. The withdraw ALWAYS acts on
+# your real settings.json. Test with FERRY_DEADMAN_DRY=1, which only says what it
+# would do. (Measured the hard way, 2026-11-25: a "sandboxed" test withdrew the
+# real base URL. Safe direction, re-pointed in a minute, but it fired.)
+# First used by Lantern-4224 on greywolf (Windows), 2026-11-25. It never had to fire.
+set -u
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+STATE="${FERRY_DATA:-$HOME/ferry-data}"
+KEEP="$STATE/deadman.keep"
+LOG="$STATE/deadman.log"
+PY=python3; command -v python3 >/dev/null 2>&1 && python3 -c '' 2>/dev/null || PY=python
+mkdir -p "$STATE"
+
+if [ "${1:-}" = keep ]; then
+    touch "$KEEP" && echo "ferry-deadman: disarmed (Ferry stays)"; exit 0
+fi
+case "${1:-600}" in *[!0-9]*) echo "usage: ferry-deadman [SECONDS|keep]" >&2; exit 2;; esac
+rm -f "$KEEP"
+echo "$(date '+%F %T') armed for ${1:-600}s" >> "$LOG"
+sleep "${1:-600}"
+if [ -f "$KEEP" ]; then
+    echo "$(date '+%F %T') disarmed in time: Ferry stays" | tee -a "$LOG"
+else
+    echo "$(date '+%F %T') NOT disarmed: withdrawing Ferry's base URL" | tee -a "$LOG"
+    if [ -n "${FERRY_DEADMAN_DRY:-}" ]; then
+        echo "  DRY RUN: would run $PY $HERE/hooks/ferry_config.py withdraw" | tee -a "$LOG"
+    else
+        "$PY" "$HERE/hooks/ferry_config.py" withdraw 2>&1 | tee -a "$LOG"
+    fi
+fi
