@@ -35,7 +35,16 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+# POSIX BY DESIGN. On Windows, announce a NAMED could-not-run before touching anything.
+# The exemption itself lives in tests/run_all.py ENV_BOUND_WINDOWS, granted by a human --
+# a suite never grants itself one. Lodestone-8ec9, 2026-11-26.
+if os.name == "nt":
+    print("SKIP(env): drives install.sh / start-proxy.sh / uninstall.sh under bash with POSIX process control; the Windows install path is not what this suite measures")
+    print("0 passed, 0 failed")
+    raise SystemExit(0)
+
 REPO = Path(__file__).resolve().parent.parent
+from _isolate import home_env  # HOME alone is not isolation on Windows
 CONF = REPO / "hooks" / "ferry_config.py"
 
 passed = failed = 0
@@ -81,7 +90,7 @@ class Box:
         self.env = {k: v for k, v in os.environ.items()
                     if not k.startswith(("ROLLING_CONTEXT_", "FERRY_", "ANTHROPIC_"))
                     and k != "CLAUDE_CONFIG_DIR"}
-        self.env["HOME"] = str(self.home)
+        self.env.update(home_env(self.home))
         if config_dir:
             self.env["CLAUDE_CONFIG_DIR"] = str(self.cfg)
 
@@ -98,11 +107,11 @@ class Box:
 
     def settings_env(self):
         p = self.cfg / "settings.json"
-        return json.loads(p.read_text()).get("env", {}) if p.exists() else None
+        return json.loads(p.read_text(encoding="utf-8")).get("env", {}) if p.exists() else None
 
     def pid(self):
         p = self.cfg / "rolling-context-proxy.pid"
-        return int(p.read_text().strip()) if p.exists() else None
+        return int(p.read_text(encoding="utf-8").strip()) if p.exists() else None
 
     def stop_started(self, pid):
         """Stop ONLY a pid this suite started: alive, ours, cmdline is OUR server.py."""
@@ -147,7 +156,7 @@ def alive(pid):
 
 # ---- S1: README points at the fork ---------------------------------------
 print("S1 README / fork")
-readme = (REPO / "README.md").read_text()
+readme = (REPO / "README.md").read_text(encoding="utf-8")
 install = readme[readme.index("## Install"):readme.index("## How Compression Works")]
 check("install section clones the fork",
       "git clone https://github.com/LupoGrigi0/claude-rolling-context.git" in install)
@@ -223,7 +232,7 @@ for label, settings in (
                   MARK: "http://127.0.0.1:5588", "ROLLING_CONTEXT_UPSTREAM": OR}})):
     port = free_port()
     b = Box(prefs=prefs(port), settings=settings)
-    before = (b.cfg / "settings.json").read_text()
+    before = (b.cfg / "settings.json").read_text(encoding="utf-8")
     r = b.sh("install.sh")
     check(f"{label}, no ferry.upstream: install refuses", r.returncode != 0, r.stdout[-400:])
     check("...naming the key to declare in preferences.json",
@@ -231,7 +240,7 @@ for label, settings in (
     if "apiKeyHelper" not in label:
         check("...and the exact value to put there", f'"upstream": "{OR}"' in r.stdout,
               r.stdout[-400:])
-    check("...settings.json byte-identical", (b.cfg / "settings.json").read_text() == before)
+    check("...settings.json byte-identical", (b.cfg / "settings.json").read_text(encoding="utf-8") == before)
     check("...no proxy started", b.pid() is None)
     r = b.sh("hooks/start-proxy.sh")
     check("...and the hook refuses the same way, starting nothing",
@@ -243,7 +252,7 @@ for label, settings in (
               env.get("ANTHROPIC_BASE_URL") == OR, env)
     else:
         check("...settings.json still byte-identical after the hook",
-              (b.cfg / "settings.json").read_text() == before)
+              (b.cfg / "settings.json").read_text(encoding="utf-8") == before)
     if b.pid() and alive(b.pid()):      # a regression started one: stop OURS only
         b.stop_started(b.pid())
     b.close()
@@ -339,7 +348,7 @@ try:
           env and not (b.home / ".claude" / "settings.json").exists())
     # The hook lives in settings.json `hooks` (a plugin symlink is not loaded by
     # this Claude Code -- Cairn, 2026-11-16).
-    s_full = json.loads((b.cfg / "settings.json").read_text())
+    s_full = json.loads((b.cfg / "settings.json").read_text(encoding="utf-8"))
     check("SessionStart hook registered in CLAUDE_CONFIG_DIR settings, running this repo's script",
           any("/hooks/start-proxy.sh" in h.get("command", "") and str(REPO) in h.get("command", "")
               for g in s_full.get("hooks", {}).get("SessionStart", []) for h in g.get("hooks", [])),

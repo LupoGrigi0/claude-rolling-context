@@ -23,6 +23,7 @@ import urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+from _isolate import home_env, home_keys  # HOME alone is not isolation on Windows
 sys.path.insert(0, str(REPO / "proxy"))
 
 # Keep the suite OUT of the production debug log: importing server.py installs
@@ -434,7 +435,7 @@ check("internal state was pruned, not just the sum",
 # ── gating: default upstream mode writes nothing ────────────────────────
 print("\nmode gating (upstream parity):")
 saved_env = {k: os.environ.get(k) for k in ("ROLLING_CONTEXT_CURATION",
-                                            "FERRY_DATA", "HOME")}
+                                            "FERRY_DATA", *home_keys())}
 gate_dir = tmp / "gate"
 os.environ.pop("ROLLING_CONTEXT_CURATION", None)
 os.environ["FERRY_DATA"] = str(gate_dir)
@@ -460,7 +461,7 @@ check("enabled -> no disabled reason to print",
 # turning them off left the one config a first-time user runs uninstrumented.
 fake_home = tmp / "home"
 fake_home.mkdir()
-os.environ["HOME"] = str(fake_home)
+os.environ.update(home_env(fake_home))
 os.environ.pop("FERRY_DATA", None)
 check("curation on, FERRY_DATA unset -> metrics still enabled",
       metrics_enabled())
@@ -483,16 +484,26 @@ check("an un-normalized path does not get a second writer",
       all(get_writer(s) is gh for s in spellings),
       [(s, get_writer(s).path) for s in spellings if get_writer(s) is not gh])
 link = tmp / "linked-data"
-os.symlink(fake_home / "ferry-data", link)
-check("a symlinked spelling of the same file shares the writer too",
-      get_writer(str(link)) is gh, get_writer(str(link)).path)
+try:
+    os.symlink(fake_home / "ferry-data", link)
+except OSError as e:
+    # Windows without Developer Mode / admin: WinError 1314, this box cannot create
+    # a symlink at all. The property is then UNMEASURED -- a FAIL, never a pass --
+    # but it must not abort the suite and take every later check's verdict with it.
+    check("a symlinked spelling of the same file shares the writer too "
+          "[COULD NOT MEASURE: this box cannot create a symlink]", False,
+          f"{type(e).__name__}: {e}")
+else:
+    check("a symlinked spelling of the same file shares the writer too",
+          get_writer(str(link)) is gh, get_writer(str(link)).path)
 
 # HOME is restored right here: the end-to-end block below resolves FERRY_CORE
 # through ~, and a fake home would send it looking for a core that isn't there.
-if saved_env["HOME"] is None:
-    os.environ.pop("HOME", None)
-else:
-    os.environ["HOME"] = saved_env["HOME"]
+for _k in home_keys():
+    if saved_env[_k] is None:
+        os.environ.pop(_k, None)
+    else:
+        os.environ[_k] = saved_env[_k]
 
 # ── cycle numbering survives a restart ──────────────────────────────────
 print("\ncycle numbering:")

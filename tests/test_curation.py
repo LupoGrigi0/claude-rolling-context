@@ -82,7 +82,7 @@ payload = producer.produce(MESSAGES, start_idx=0, keep_from_idx=5)
 archive_files = sorted((data / "archive").glob("archive_*.jsonl"))
 check("archive file created", len(archive_files) == 1, archive_files)
 archived = [json.loads(l) for l in
-            archive_files[0].read_text().strip().split("\n")]
+            archive_files[0].read_text(encoding="utf-8").strip().split("\n")]
 check("all 5 evicted turns archived", len(archived) == 5, len(archived))
 
 check("text turns archived byte-identical",
@@ -106,7 +106,7 @@ blob_path = data / "archive" / "blobs" / f"sha256-{digest}"
 check("blob stored as raw binary, filename = its own sha256",
       blob_path.exists() and blob_path.read_bytes() == PNG_BYTES)
 check("no base64 blob data inline in the archive",
-      PNG_B64 not in archive_files[0].read_text())
+      PNG_B64 not in archive_files[0].read_text(encoding="utf-8"))
 img_turn = archived[3]["content"]
 check("archived turn holds a ferry_blob ref",
       any(isinstance(b, dict) and b.get("type") == "ferry_blob"
@@ -251,7 +251,7 @@ check("adding an archived_ts field to the input does not change the digest",
 # into a hole. Duplicates are untidy; holes are unrecoverable.
 ledger = _d / "archive" / f"{fn1}.batches"
 check("batch ledger exists beside the archive", ledger.exists())
-led = [json.loads(x) for x in ledger.read_text().splitlines() if x.strip()]
+led = [json.loads(x) for x in ledger.read_text(encoding="utf-8").splitlines() if x.strip()]
 check("ledger records one entry per WRITTEN batch (3), not per call (4)",
       len(led) == 3, len(led))
 check("every ledger range points at lines that actually exist",
@@ -348,7 +348,7 @@ def _fresh(name, carry_from=None):
 
 def _notes(d):
     try:
-        with open(d / "metrics.csv", newline="") as f:
+        with open(d / "metrics.csv", newline="", encoding="utf-8") as f:
             return [r["note"] for r in csv.DictReader(f) if r["event"] == "curation"]
     except OSError:
         return []

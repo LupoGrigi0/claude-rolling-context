@@ -32,7 +32,7 @@ ALLOW-LIST, deliberately empty: a suite permitted to run zero checks must be
 named HERE, in the runner, by a human. An empty list means no exemptions exist
 today -- and an exemption cannot be granted by the suite itself.
 """
-import re, subprocess, sys
+import os, re, subprocess, sys
 from pathlib import Path
 
 TESTS = Path(__file__).resolve().parent
@@ -56,6 +56,18 @@ ENV_BOUND = {
     "test_watch_stall_survives_pulse.py":
         "asserts a property of the smoothcurves deployment; box-bound by design",
 }
+# PER-PLATFORM: suites that are POSIX by design, exempt ONLY on Windows. Added
+# 2026-11-26 by Lodestone-8ec9 with the maintainer's approval. On Linux these are
+# absent from ENV_BOUND, so a SKIP from any of them there is still a FAILURE.
+ENV_BOUND_WINDOWS = {
+    "test_privacy.py":
+        "POSIX file-mode privacy checks; Windows ACL privacy is unmeasured, not passed",
+    "test_install.py": "drives bash install/start/uninstall scripts",
+    "test_hook_registration.py": "asserts the bash SessionStart hook form",
+    "test_ferry_restart.py": "drives bin/ferry-restart (bash) and reads /proc",
+}
+if os.name == "nt":
+    ENV_BOUND = {**ENV_BOUND, **ENV_BOUND_WINDOWS}
 # test_watch_deployed_matches_repo.py retired 2026-11-16 with the ferry-watch
 # cron it guarded (the test proxies it watched were retired the same night).
 SUMMARY = re.compile(r'(\d+)\s+passed,\s+(\d+)\s+failed')

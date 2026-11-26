@@ -15,6 +15,7 @@ import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+from _isolate import home_env  # HOME alone is not isolation on Windows
 passed = failed = 0
 
 
@@ -30,7 +31,7 @@ def check(desc, cond, ctx=None):
 
 home = Path(tempfile.mkdtemp(prefix="ferry-wm-"))
 (home / ".claude").mkdir()
-env = {"HOME": str(home), "PATH": os.environ["PATH"], "CLAUDE_CONFIG_DIR": str(home / ".claude")}
+env = {**home_env(home), "PATH": os.environ["PATH"], "CLAUDE_CONFIG_DIR": str(home / ".claude")}
 
 
 def prefs(block):

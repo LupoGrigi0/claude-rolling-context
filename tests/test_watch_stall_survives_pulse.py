@@ -93,7 +93,7 @@ def main():
     if not WATCH.exists():
         print(f"FAIL: {WATCH} not found")
         return 1
-    src = WATCH.read_text()
+    src = WATCH.read_text(encoding="utf-8")
 
     expr = extract_lastts_expr(src)
     check("lastts expression found in the real script", expr is not None, True)

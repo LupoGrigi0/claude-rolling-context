@@ -81,7 +81,7 @@ check("observed-floor bound is OFF unless explicitly enabled",
       srv.OBSERVED_FLOOR_ON, False)
 check("the enable switch is an env var, not a code edit",
       "ROLLING_CONTEXT_OBSERVED_FLOOR" in open(
-          HERE.parent / "proxy" / "server.py").read(), True)
+          HERE.parent / "proxy" / "server.py", encoding="utf-8").read(), True)
 
 # ---- 1. The server tracks the smallest real context it has seen ------------
 # The tracker itself stays correct and tested; only its FEED is untrustworthy.

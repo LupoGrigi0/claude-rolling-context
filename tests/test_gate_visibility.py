@@ -161,7 +161,7 @@ with tempfile.TemporaryDirectory() as d:
                    161234, model="claude-haiku-4-5-20251001", window=262144)
     srv._note_gate("held: 5 cycles in the last 300s", 158000)
 
-    rows = list(csv.DictReader(open(w.path)))
+    rows = list(csv.DictReader(open(w.path, encoding="utf-8")))
 
     # A gate row must never be written when metrics are off -- the helper is
     # called unconditionally from the request path, so its own guard is the
@@ -180,7 +180,7 @@ with tempfile.TemporaryDirectory() as d:
     # mutation hides. Fail by assertion, always.
     check("metrics-off gate call does not raise", _raised, None)
     check("no row written while metrics are off",
-          len(list(csv.DictReader(open(w.path)))), len(rows))
+          len(list(csv.DictReader(open(w.path, encoding="utf-8")))), len(rows))
 
 check("three rows written", len(rows), 3)
 if len(rows) == 3:

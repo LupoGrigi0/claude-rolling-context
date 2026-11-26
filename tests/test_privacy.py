@@ -14,7 +14,16 @@ import tempfile
 import threading
 from pathlib import Path
 
+# POSIX BY DESIGN. On Windows, announce a NAMED could-not-run before touching anything.
+# The exemption itself lives in tests/run_all.py ENV_BOUND_WINDOWS, granted by a human --
+# a suite never grants itself one. Lodestone-8ec9, 2026-11-26.
+if os.name == "nt":
+    print("SKIP(env): POSIX file modes (umask, 0600/0700) are what this suite measures; Windows has no such modes, so Windows ACL privacy is UNMEASURED here, not passed")
+    print("0 passed, 0 failed")
+    raise SystemExit(0)
+
 REPO = Path(__file__).resolve().parent.parent
+from _isolate import home_env  # HOME alone is not isolation on Windows
 passed = failed = 0
 
 
@@ -40,7 +49,8 @@ for f in ("metrics.csv", "proxy-state.json", "archive/archive_20261101.jsonl"):
 os.makedirs(os.path.join(work, ".claude"))
 open(os.path.join(work, "debug.log"), "w").close()   # a pre-existing log...
 os.chmod(os.path.join(work, "debug.log"), 0o664)      # ...left world-readable
-os.environ.update(HOME=work, FERRY_DATA=data, ROLLING_CONTEXT_CURATION="ferry",
+os.environ.update(home_env(work))
+os.environ.update(FERRY_DATA=data, ROLLING_CONTEXT_CURATION="ferry",
                   ROLLING_CONTEXT_PORT="5799", ROLLING_CONTEXT_UPSTREAM="http://127.0.0.1:9",
                   ROLLING_CONTEXT_LOG=os.path.join(work, "debug.log"))
 os.environ.pop("FERRY_DEBUG_ENDPOINTS", None)

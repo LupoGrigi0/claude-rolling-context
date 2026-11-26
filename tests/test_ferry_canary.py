@@ -20,6 +20,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
+from _isolate import home_env  # HOME alone is not isolation on Windows
 CANARY = REPO / "tools" / "ferry-canary"
 FORBIDDEN = [(5588, 5588), (5610, 5613), (21000, 21005), (21097, 21097),
              (21099, 21099), (22000, 22999)]
@@ -66,7 +67,8 @@ os.makedirs(os.path.join(home, ".claude"))
 for k in ("ROLLING_CONTEXT_CURATION", "FERRY_UPSTREAM_KEY", "FERRY_UPSTREAM_KEY_FILE",
           "ANTHROPIC_BASE_URL", "CLAUDE_CONFIG_DIR"):
     os.environ.pop(k, None)
-os.environ.update(HOME=home, FERRY_DATA=data, ROLLING_CONTEXT_PORT="5799",
+os.environ.update(home_env(home))
+os.environ.update(FERRY_DATA=data, ROLLING_CONTEXT_PORT="5799",
                   ROLLING_CONTEXT_UPSTREAM=f"http://127.0.0.1:{stub_port}",
                   ROLLING_CONTEXT_LOG=os.path.join(work, "debug.log"))
 

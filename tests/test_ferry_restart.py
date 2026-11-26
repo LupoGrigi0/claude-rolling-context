@@ -20,7 +20,16 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+# POSIX BY DESIGN. On Windows, announce a NAMED could-not-run before touching anything.
+# The exemption itself lives in tests/run_all.py ENV_BOUND_WINDOWS, granted by a human --
+# a suite never grants itself one. Lodestone-8ec9, 2026-11-26.
+if os.name == "nt":
+    print("SKIP(env): drives bin/ferry-restart (a bash script) and reads /proc/<pid>/cmdline; neither exists on Windows")
+    print("0 passed, 0 failed")
+    raise SystemExit(0)
+
 REPO = Path(__file__).resolve().parent.parent
+from _isolate import home_env  # HOME alone is not isolation on Windows
 RESTART = REPO / "bin" / "ferry-restart"
 CONF = REPO / "hooks" / "ferry_config.py"
 passed = failed = 0
@@ -77,7 +86,7 @@ cfg.mkdir()
     {"ferry": {"port": port, "upstream": f"http://127.0.0.1:{stub.server_port}"}}))
 env = {k: v for k, v in os.environ.items()
        if not k.startswith(("ROLLING_CONTEXT_", "FERRY_", "ANTHROPIC_")) and k != "CLAUDE_CONFIG_DIR"}
-env.update(HOME=str(home), CLAUDE_CONFIG_DIR=str(cfg))
+env.update(home_env(home), CLAUDE_CONFIG_DIR=str(cfg))
 started = set()
 
 
@@ -119,11 +128,11 @@ try:
     check("...a NEW pid holds the port", pid2 is not None and pid2 != pid1, (pid1, pid2))
     check("...and the old pid is gone", pid1 is not None and not alive(pid1), pid1)
     check("...settings still point at Ferry's port",
-          json.loads((cfg / "settings.json").read_text())["env"]["ANTHROPIC_BASE_URL"]
+          json.loads((cfg / "settings.json").read_text(encoding="utf-8"))["env"]["ANTHROPIC_BASE_URL"]
           == f"http://127.0.0.1:{port}")
 
     # stop our proxy (verified) so the port can be taken by an impostor
-    if pid2 and alive(pid2) and "server.py" in Path(f"/proc/{pid2}/cmdline").read_text():
+    if pid2 and alive(pid2) and "server.py" in Path(f"/proc/{pid2}/cmdline").read_text(encoding="utf-8"):
         os.kill(pid2, signal.SIGTERM)
         for _ in range(50):
             if holder() is None:
@@ -154,7 +163,7 @@ try:
 finally:
     for pid in started:
         try:
-            if alive(pid) and "server.py" in Path(f"/proc/{pid}/cmdline").read_text():
+            if alive(pid) and "server.py" in Path(f"/proc/{pid}/cmdline").read_text(encoding="utf-8"):
                 os.kill(pid, signal.SIGTERM)
         except OSError:
             pass

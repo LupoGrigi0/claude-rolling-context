@@ -27,6 +27,7 @@ import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+from _isolate import home_env  # HOME alone is not isolation on Windows
 OR = "https://openrouter.ai/api"
 
 ANTHROPIC = "https://api.anthropic.com"
@@ -52,7 +53,7 @@ def _child(case):
     os.makedirs(os.path.join(home, ".claude"), exist_ok=True)
     for k in ("ROLLING_CONTEXT_UPSTREAM", "ANTHROPIC_BASE_URL", "CLAUDE_CONFIG_DIR"):
         os.environ.pop(k, None)
-    os.environ["HOME"] = home
+    os.environ.update(home_env(home))
     work = tempfile.mkdtemp()
     os.makedirs(os.path.join(work, ".claude"))
     os.chdir(work)
@@ -102,7 +103,7 @@ def _refusal_child(case):
     os.makedirs(os.path.join(work, ".claude"), exist_ok=True)
     for k in ("ROLLING_CONTEXT_UPSTREAM", "ANTHROPIC_BASE_URL", "CLAUDE_CONFIG_DIR"):
         os.environ.pop(k, None)
-    os.environ["HOME"] = home
+    os.environ.update(home_env(home))
     json.dump({"env": {"ANTHROPIC_BASE_URL": OR}},
               open(os.path.join(home, ".claude", "settings.json"), "w"))
     if case == "D":                     # project scope redirects elsewhere

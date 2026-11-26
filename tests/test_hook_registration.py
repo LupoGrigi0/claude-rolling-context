@@ -13,7 +13,16 @@ import sys
 import tempfile
 from pathlib import Path
 
+# POSIX BY DESIGN. On Windows, announce a NAMED could-not-run before touching anything.
+# The exemption itself lives in tests/run_all.py ENV_BOUND_WINDOWS, granted by a human --
+# a suite never grants itself one. Lodestone-8ec9, 2026-11-26.
+if os.name == "nt":
+    print("SKIP(env): asserts the bash SessionStart hook form (bash .../hooks/start-proxy.sh); on Windows ferry_config.py registers the PowerShell form, which this suite does not measure")
+    print("0 passed, 0 failed")
+    raise SystemExit(0)
+
 REPO = Path(__file__).resolve().parent.parent
+from _isolate import home_env  # HOME alone is not isolation on Windows
 CONF = REPO / "hooks" / "ferry_config.py"
 OURS = f"bash {REPO}/hooks/start-proxy.sh"
 passed = failed = 0
@@ -34,7 +43,7 @@ home, cfg = root / "home", root / "cfg"
 home.mkdir()
 cfg.mkdir()
 env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CONFIG_DIR"}
-env.update(HOME=str(home), CLAUDE_CONFIG_DIR=str(cfg))
+env.update(home_env(home), CLAUDE_CONFIG_DIR=str(cfg))
 S = cfg / "settings.json"
 
 THEIRS_PERM = {"matcher": "*", "hooks": [{"type": "command", "command": "node ~/mirror/permission-hook.mjs; exit 0", "timeout": 604800}]}
@@ -45,7 +54,7 @@ S.write_text(json.dumps({"autoCompactEnabled": False,
 
 def conf(cmd):
     r = subprocess.run([sys.executable, str(CONF), cmd], env=env, capture_output=True, text=True)
-    return r.returncode, json.loads(S.read_text())
+    return r.returncode, json.loads(S.read_text(encoding="utf-8"))
 
 
 def ferry_cmds(s):
@@ -70,7 +79,7 @@ check("Ferry's entry is gone", ferry_cmds(s) == [], ferry_cmds(s))
 check("their SessionStart hook survives unregister", s["hooks"]["SessionStart"] == [THEIRS_START], s["hooks"])
 check("their PermissionRequest hook survives unregister", s["hooks"]["PermissionRequest"] == [THEIRS_PERM])
 
-before = S.read_text()
+before = S.read_text(encoding="utf-8")
 code, s = conf("unregister-hook")
 check("unregister with nothing of ours changes nothing (control)", json.loads(before) == s)
 

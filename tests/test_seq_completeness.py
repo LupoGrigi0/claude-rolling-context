@@ -58,7 +58,7 @@ p = fresh()
 w = metrics.MetricsWriter(p)
 for i in range(5):
     w.row("request", context_tokens=1000 + i)
-rows = list(csv.reader(open(p)))[1:]
+rows = list(csv.reader(open(p, encoding="utf-8")))[1:]
 seqs = [int(r[12]) for r in rows]
 check("seq numbers every row", len(seqs), 5)
 check("seq starts at 1", seqs[0], 1)
@@ -67,7 +67,7 @@ check("seq is gap-free and monotonic", seqs, [1, 2, 3, 4, 5])
 # ---- 3. IT SURVIVES A RESTART. The bug that would fake a loss. ----------
 w2 = metrics.MetricsWriter(p)      # new writer, same file = proxy restart
 w2.row("request", context_tokens=9999)
-rows = list(csv.reader(open(p)))[1:]
+rows = list(csv.reader(open(p, encoding="utf-8")))[1:]
 check("seq CONTINUES across a restart (does not reset to 1)",
       int(rows[-1][12]), 6)
 
@@ -76,16 +76,16 @@ p2 = fresh()
 w3 = metrics.MetricsWriter(p2)
 w3.row("proxy_start"); w3.row("alive"); w3.row("curation", cycle=1)
 w3.row("archive_write", cycle=1); w3.row("error", note="x")
-rows = list(csv.reader(open(p2)))[1:]
+rows = list(csv.reader(open(p2, encoding="utf-8")))[1:]
 check("all event types carry seq", [int(r[12]) for r in rows], [1, 2, 3, 4, 5])
 
 # ---- 5. A LOST ROW IS DETECTABLE — the whole point ----------------------
 # Simulate the failure: delete a row from the middle, as a dropped write
 # would. Before seq this was invisible; now a reader can name it.
-lines = open(p2).read().splitlines()
+lines = open(p2, encoding="utf-8").read().splitlines()
 del lines[3]                                    # drop one data row
 open(p2, "w").write("\n".join(lines) + "\n")
-got = [int(r[12]) for r in list(csv.reader(open(p2)))[1:]]
+got = [int(r[12]) for r in list(csv.reader(open(p2, encoding="utf-8")))[1:]]
 gaps = [b - a for a, b in zip(got, got[1:]) if b - a != 1]
 check("a dropped row leaves a DETECTABLE gap", len(gaps), 1)
 check("and the gap is exactly one row wide", gaps[0], 2)
@@ -97,7 +97,7 @@ open(p3, "w").write(metrics.HEADER_LINE + "\n"
                     + "2026-09-01T00:00:00Z,request,,100,,,,,,haiku,,\n")
 w4 = metrics.MetricsWriter(p3)
 w4.row("request", context_tokens=200)
-rows = list(csv.reader(open(p3)))[1:]
+rows = list(csv.reader(open(p3, encoding="utf-8")))[1:]
 check("legacy row has no seq field at all", len(rows[0]) < 13, True)
 check("new row after legacy rows still numbers from 1",
       int(rows[1][12]), 1)
