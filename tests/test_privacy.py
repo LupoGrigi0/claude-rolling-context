@@ -33,6 +33,10 @@ work = tempfile.mkdtemp(prefix="ferry-privacy-")
 data = os.path.join(work, "ferry-data")
 os.makedirs(data, mode=0o775)                     # an earlier Ferry's world-readable dir
 os.chmod(data, 0o775)
+os.makedirs(os.path.join(data, "archive"), mode=0o775)
+for f in ("metrics.csv", "proxy-state.json", "archive/archive_20261101.jsonl"):
+    open(os.path.join(data, f), "w").close()
+    os.chmod(os.path.join(data, f), 0o664)        # left world-readable by an older Ferry
 os.makedirs(os.path.join(work, ".claude"))
 open(os.path.join(work, "debug.log"), "w").close()   # a pre-existing log...
 os.chmod(os.path.join(work, "debug.log"), 0o664)      # ...left world-readable
@@ -51,6 +55,10 @@ def mode(p):
 
 
 check("existing world-readable data dir is tightened to 0700", mode(data) == 0o700, oct(mode(data)))
+for f in ("metrics.csv", "proxy-state.json", "archive/archive_20261101.jsonl"):
+    check(f"pre-existing {f} tightened to 0600", mode(os.path.join(data, f)) == 0o600,
+          oct(mode(os.path.join(data, f))))
+check("pre-existing archive/ dir tightened to 0700", mode(os.path.join(data, "archive")) == 0o700)
 probe = os.path.join(data, "probe.jsonl")
 open(probe, "w").close()
 check("files created by the proxy process are 0600", mode(probe) == 0o600, oct(mode(probe)))

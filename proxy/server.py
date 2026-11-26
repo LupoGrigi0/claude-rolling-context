@@ -834,11 +834,17 @@ if _persist_path:
     os.makedirs(_ferry_data, exist_ok=True)
     # Tighten a data dir an earlier Ferry created world-readable. The dir is the
     # gate: 0700 here keeps every file under it private, old modes or not.
-    try:
-        if os.stat(_ferry_data).st_uid == os.getuid():
-            os.chmod(_ferry_data, 0o700)
-    except OSError:
-        pass
+    # ...and every file already under it (metrics.csv, proxy-state.json, the
+    # archive): umask cannot touch existing files (Forge, 2026-11-26).
+    _uid = os.getuid()
+    for _root, _dirs, _files in os.walk(_ferry_data):
+        for _name, _mode in [(_root, 0o700)] + [(os.path.join(_root, f), 0o600) for f in _files]:
+            try:
+                _st = os.lstat(_name)
+                if _st.st_uid == _uid and not os.path.islink(_name) and _st.st_mode & 0o077:
+                    os.chmod(_name, _mode)
+            except OSError:
+                pass
 store = CompressionStore(persist_path=_persist_path)
 
 # Ferry metrics: None in default mode, and every call site is guarded — the
