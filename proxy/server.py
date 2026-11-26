@@ -99,6 +99,13 @@ def _log_filename():
 
 
 _log_path = _log_filename()
+# umask covers NEW files; an existing log keeps its old mode (0664 under the box
+# default). It can hold message content, so make it owner-only too.
+try:
+    if os.path.exists(_log_path) and os.stat(_log_path).st_uid == os.getuid():
+        os.chmod(_log_path, 0o600)
+except OSError:
+    pass
 # encoding is explicit: without it Windows falls back to cp1252 and the em
 # dashes in these log messages land as mojibake.
 _log_handler = FlushFileHandler(_log_path, mode="a", encoding="utf-8",

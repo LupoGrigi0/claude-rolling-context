@@ -34,6 +34,8 @@ data = os.path.join(work, "ferry-data")
 os.makedirs(data, mode=0o775)                     # an earlier Ferry's world-readable dir
 os.chmod(data, 0o775)
 os.makedirs(os.path.join(work, ".claude"))
+open(os.path.join(work, "debug.log"), "w").close()   # a pre-existing log...
+os.chmod(os.path.join(work, "debug.log"), 0o664)      # ...left world-readable
 os.environ.update(HOME=work, FERRY_DATA=data, ROLLING_CONTEXT_CURATION="ferry",
                   ROLLING_CONTEXT_PORT="5799", ROLLING_CONTEXT_UPSTREAM="http://127.0.0.1:9",
                   ROLLING_CONTEXT_LOG=os.path.join(work, "debug.log"))
@@ -56,7 +58,7 @@ d2 = os.path.join(data, "archive2")
 os.makedirs(d2)
 check("dirs created by the proxy process are 0700", mode(d2) == 0o700, oct(mode(d2)))
 log = os.path.join(work, "debug.log")
-check("the debug log is not world-readable", os.path.exists(log) and not (mode(log) & 0o044), oct(mode(log)) if os.path.exists(log) else "absent")
+check("a pre-existing world-readable debug log is tightened", os.path.exists(log) and not (mode(log) & 0o044), oct(mode(log)) if os.path.exists(log) else "absent")
 
 proxy = srv.ThreadedHTTPServer(("127.0.0.1", 0), srv.ProxyHandler)
 threading.Thread(target=proxy.serve_forever, daemon=True).start()
