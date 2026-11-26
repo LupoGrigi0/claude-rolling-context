@@ -27,7 +27,31 @@ mkdir -p "$DATA" || { echo "ferry-watchdog: cannot create $DATA" >&2; exit 1; }
 exec 9>"$DATA/watchdog.lock" || { echo "ferry-watchdog: cannot open lock" >&2; exit 1; }
 flock -n 9 || exit 0
 
-python3 "$HERE/tools/ferry-canary" >/dev/null 2>&1 && exit 0
+# A rolled-back clone serves fine and must NOT look normal (Zara, 2026-11-26:
+# "a successful rollback hides the threat it prevented"). Alert once per
+# detached commit, while it lasts.
+if ! git -C "$HERE" symbolic-ref -q HEAD >/dev/null 2>&1; then
+    sha=$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null)
+    if [ "$(cat "$DATA/detached-alerted" 2>/dev/null)" != "$sha" ]; then
+        echo "$sha" > "$DATA/detached-alerted"
+        DETACHED="Ferry is running ${sha}, NOT master (rolled back, or checked out by hand). To try master again: git -C $HERE checkout master && $HERE/bin/ferry-restart"
+    fi
+else
+    rm -f "$DATA/detached-alerted"
+fi
+
+if python3 "$HERE/tools/ferry-canary" >/dev/null 2>&1; then
+    [ -z "${DETACHED:-}" ] && exit 0
+    msg="[ferry-watchdog] $(date -u +%FT%TZ): $DETACHED"
+    echo "$msg"
+    if [ -x "$HACS" ]; then
+        for to in $("$HACS" whoami 2>/dev/null) ${FERRY_ALERT_TO:-}; do
+            printf '%s\n' "$msg" | "$HACS" send "$to" "[ferry-watchdog] running off master" - >/dev/null 2>&1 \
+                || echo "ferry-watchdog: alert to $to FAILED" >&2
+        done
+    fi
+    exit 0
+fi
 
 ts=$(date -u +%FT%TZ)
 out=$(bash "$HERE/bin/ferry-restart" 2>&1); rc=$?

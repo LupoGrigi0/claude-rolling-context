@@ -140,6 +140,28 @@ try:
     check("...and a proxy holds the port", p is not None)
     check("...settings still point at Ferry", base_url() == f"http://127.0.0.1:{port}", base_url())
 
+    # 2b. after a rollback the watchdog must say so ONCE -- a rollback that
+    #     serves fine must not look normal (Zara, 2026-11-26)
+    alerts = root / "alerts.txt"
+    fake = root / "hacs"
+    fake.write_text(f'#!/bin/sh\n[ "$1" = whoami ] && echo Test-0000 && exit 0\n'
+                    f'echo "TO=$2 SUBJ=$3" >> {alerts}\ncat >> {alerts}\n')
+    fake.chmod(0o755)
+    _p = json.loads((home / "preferences.json").read_text())
+    _p["ferry"]["alert_to"] = "Steward-1111"          # the ONE config source, not env
+    (home / "preferences.json").write_text(json.dumps(_p))
+    wenv = dict(env, FERRY_HACS=str(fake))
+    wd = lambda: subprocess.run(["bash", str(clone / "tools" / "ferry-watchdog")], env=wenv,
+                                capture_output=True, text=True, timeout=180)
+    wd()
+    a = alerts.read_text() if alerts.exists() else ""
+    check("watchdog after rollback -> alerts 'running off master'", "off master" in a and "checkout master" in a, a[:200])
+    check("...to the mind AND the human steward", "TO=Test-0000" in a and "TO=Steward-1111" in a, a[:200])
+    alerts.unlink(missing_ok=True)
+    wd()
+    check("...only ONCE per detached commit (second run silent)", not alerts.exists())
+    holder()
+
     # 3. bad code, nothing good to go back to -> withdrawn
     git("checkout", "-q", "--detach", BAD)
     (data / "last-good-commit").write_text(BAD + "\n")

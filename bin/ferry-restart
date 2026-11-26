@@ -84,7 +84,9 @@ if [ -n "$PREV" ] && [ "$PREV" != "$NOW" ] && git -C "$HERE" cat-file -e "$PREV^
         && git -C "$HERE" checkout -q --detach "$PREV" 2>/dev/null; then
     echo "ferry-restart: ROLLING BACK to the last good commit ${PREV:0:7}" >&2
     if bring_up; then
-        echo "ferry-restart: ROLLED BACK -- Ferry serving on ${PREV:0:7} (pid $($CONF who-holds "$PORT")). The clone is on a detached HEAD; 'git checkout master' to try again." >&2
+        echo "ferry-restart: ROLLED BACK -- Ferry serving on ${PREV:0:7} (pid $($CONF who-holds "$PORT"))." >&2
+        echo "ferry-restart: the clone is OFF master (detached at ${PREV:0:7}). To try the new code again:" >&2
+        echo "ferry-restart:   git -C $HERE checkout master && $HERE/bin/ferry-restart" >&2
         exit 3
     fi
     stop_ours
