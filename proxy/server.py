@@ -1270,6 +1270,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
             f"messages={len(messages)} chars={msg_chars:,} "
             f"session={session_id[:8] or '(none)'}"
         )
+        # Which stream is this? (2026-11-26: on one mind the 1-2 message requests
+        # grew with the turns and the full-history ones did not -- the reverse of
+        # another mind on the same Claude Code.) anthropic-beta and the
+        # x-claude-code-* names carry no secret; log them so streams can be told
+        # apart by measurement. Auth headers are never logged.
+        log.info(
+            f"[STREAM] path={self.path} beta={self.headers.get('anthropic-beta', '')} "
+            f"cc_headers={sorted(k.lower() for k in self.headers.keys() if k.lower().startswith(('x-claude', 'x-stainless-helper', 'anthropic-')) and k.lower() != 'anthropic-beta')} "
+            f"first_role={(messages[0].get('role') if messages else '-')} "
+            f"system_chars={len(json.dumps(payload.get('system', '')))} "
+            f"tools={len(payload.get('tools') or [])}"
+        )
 
         # /rolling-context:off — resolved fresh per request so the toggle is
         # live. Machine-wide off wins; otherwise this conversation's own marker
