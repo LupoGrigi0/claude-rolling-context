@@ -999,6 +999,13 @@ def _do_background_compression(entry: dict, messages: list, auth_headers: dict,
             # Nothing worth compressing — don't leave an empty entry behind
             store.remove(entry)
             return
+        # F2: the PLANNED landing, as a metrics row (the UI reads metrics.csv,
+        # never the debug log, which can hold content -- Zara, 2026-11-26). The
+        # ACTUAL landing is the next injected request's context_tokens.
+        _plan = getattr(compressor, "planned_landing", None)
+        if _metrics and _plan:
+            _metrics.row("plan", context_tokens=real_token_count,
+                         note=f"planned_landing={_plan}; target={TARGET_TOKENS}")
         # compressed = [summary, ack] + recent_verbatim
         # Prefix = ONLY [summary, ack] — verbatim messages come from the
         # original request during injection, so including them in the prefix
