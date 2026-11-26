@@ -15,6 +15,12 @@ Pure stdlib — no external dependencies needed.
 import hashlib
 import json
 import os
+
+# PRIVACY: everything this proxy writes -- the verbatim archive, proxy-state.json
+# (carry + gists), metrics, the debug log -- is the mind's own session. With the
+# box's default umask 0002 under a 0755 home it was readable by EVERY local user
+# (Zara, 2026-11-26). Owner-only for all files and dirs this process creates.
+os.umask(0o077)
 from collections import OrderedDict
 import sys
 import logging
@@ -819,6 +825,13 @@ _ferry_data = os.environ.get("FERRY_DATA") or os.path.join(
 _persist_path = os.path.join(_ferry_data, "proxy-state.json") if _ferry_curation else None
 if _persist_path:
     os.makedirs(_ferry_data, exist_ok=True)
+    # Tighten a data dir an earlier Ferry created world-readable. The dir is the
+    # gate: 0700 here keeps every file under it private, old modes or not.
+    try:
+        if os.stat(_ferry_data).st_uid == os.getuid():
+            os.chmod(_ferry_data, 0o700)
+    except OSError:
+        pass
 store = CompressionStore(persist_path=_persist_path)
 
 # Ferry metrics: None in default mode, and every call site is guarded — the
@@ -843,6 +856,7 @@ def _metrics_off_reason():
 # set FERRY_WINDOW to record it (blank otherwise — a guessed window would
 # turn every "% of context used" chart into fiction).
 _window = os.environ.get("FERRY_WINDOW") or None
+DEBUG_ENDPOINTS = os.environ.get("FERRY_DEBUG_ENDPOINTS") == "1"
 if _metrics and store.compressions:
     # Restored state, not a cold boot: the pointer index survived, so the
     # token curve continues rather than starting over.
@@ -1089,7 +1103,19 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if normalized_path == "/health":
             self._handle_health()
         elif normalized_path == "/debug/compressions":
-            self._handle_debug_compressions()
+            # Returns the full curated prefix (carry + verbatim gists). A loopback
+            # port has no uid boundary, so this was readable by any local user.
+            # Off unless FERRY_DEBUG_ENDPOINTS=1 (Zara, 2026-11-26). Answered
+            # HERE either way -- never forwarded upstream.
+            if DEBUG_ENDPOINTS:
+                self._handle_debug_compressions()
+            else:
+                msg = b"disabled (set FERRY_DEBUG_ENDPOINTS=1)\n"
+                self.send_response(404)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(msg)))
+                self.end_headers()
+                self.wfile.write(msg)
         elif normalized_path == "/lean/status":
             self._handle_lean_status()
         else:
