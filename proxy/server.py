@@ -1661,7 +1661,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
             # The one remaining SILENT way past the trigger (production, Zara,
             # 2026-11-26: 802k, no curation, no log line, no gate row). Every
             # "over trigger and did nothing" must say why.
+            _pending = any(e.get("prefix") is not None for e in store.compressions)
             if (not disabled and total_input > TRIGGER_TOKENS
+                    and len(current_messages) < 6 and _pending):
+                # Expected: a curated prefix is stored and takes effect at the
+                # next FULL-history request. Newer Claude Code sends 1-2 message
+                # requests within a turn (Zara, 2026-11-26), so this would
+                # otherwise warn on every in-turn step.
+                log.debug(f"[MSG] {total_input:,} over trigger, {len(current_messages)} "
+                          f"message(s): curation pending at the next full request")
+            elif (not disabled and total_input > TRIGGER_TOKENS
                     and len(current_messages) < 6):
                 log.warning(f"[MSG] {total_input:,} over trigger but NOT curating -- "
                             f"only {len(current_messages)} message(s) in the request "
