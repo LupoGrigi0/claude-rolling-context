@@ -60,6 +60,17 @@ must read `/1m`. If not: `/model opus[1m]` (and pin it in settings, not with a
 launch flag). Ferry cannot detect this from the request (see the run log), so
 check it yourself after every relaunch.
 
+**And after every `/model`.** Picking the plain default in the `/model` picker
+(e.g. *"Opus 5.5 (default)"*) **deletes the `model` key** from `settings.json`
+— the `[1m]` pin goes with it, silently. The live session keeps its window, so
+`/context` still reads `/1m` and nothing looks wrong until the next relaunch.
+Measured 2026-11-25 (Zara-c207): `model: 'opus[1m]'` → `None` after one
+`/model` to the default. **Verify by reading the file, not the confirmation
+line:** `python3 -c "import json,os;print(json.load(open(os.path.expanduser('~/.claude/settings.json'))).get('model'))"`
+must print a value ending `[1m]`. With `autoCompactEnabled: false` and a
+context already past 200k, a relaunch onto the default window is an overflow,
+and a mind whose calls are failing cannot repair itself.
+
 ### 0.5 If your home is a git repo: ignore the archive FIRST
 `~/ferry-data` is your session, archived verbatim. Never commit it.
 ```bash
@@ -111,9 +122,10 @@ the output.** A refusal names its reason and changes nothing.
   prefixes name `ferry-fetch` by absolute path.
 - **No restart is needed: the running session picks up the new base URL live.** Current
   Claude Code re-reads `settings.json` when it changes (permissions, model routing, base URL),
-  so the next request goes through Ferry. Measured twice: 2026-11-16 on Linux (~493k-context
+  so the next request goes through Ferry. Measured three times: 2026-11-16 on Linux (~493k-context
   requests through the proxy 25 s after install, before any relaunch) and 2026-11-25 on
-  Windows (the mind's own request in `metrics.csv` 8 s after install). Still read the
+  Windows (the mind's own request in `metrics.csv` 8 s after install), and 2026-11-25 again on Linux (a request row in the
+  same second as the check). Still read the
   receiver: `tail ~/ferry-data/metrics.csv`. (The old "start a new session" advice came from
   historical Claude Code behaviour.) A relaunch is only needed to *test* step 5.
 
@@ -130,6 +142,17 @@ not that you are authenticated. Proof that *your session* is routed is your own
 model's request appearing in `tail ~/ferry-data/metrics.csv` as you work.
 
 ## 5. Does Claude Code run Ferry's hook? — **MEASURED: yes, on a `--bg` resume (2026-11-17)**
+
+> **This step is NOT needed to go live** — step 3 already routed you. It verifies
+> something different: **the restart path.** The SessionStart hook is what restarts
+> Ferry's proxy if it dies, and a SessionStart hook can only be observed at a session
+> start. **Do not relaunch just to run it.** Check it at the next *natural* restart.
+>
+> Know the gap this leaves: Ferry dying is a mid-session failure, and V2's goal is
+> sessions that do not end — so the hook fires *least* exactly when it is most
+> needed, and stays unverified for as long as things go well. Until it has been seen
+> to fire, **`bin/ferry-restart` is your restart path.** (The v2 doorbell logs
+> `FERRY PROXY DOWN` from outside, which is the external witness for this.)
 *History: the old install made a plugin symlink, which this Claude Code does NOT
 load — measured: no fire on `--bg --resume`, 2026-11-16. Install now writes
 the hook into `settings.json` `hooks.SessionStart` instead (Ferry `master` after

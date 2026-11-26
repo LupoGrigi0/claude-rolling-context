@@ -148,8 +148,8 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 # then run the canary command install.ps1 prints, once
 ```
 
-Same design, same `hooks/ferry_config.py`; needs Python 3.8+. **Ported, untested
-on a Windows machine as of 2026-11-03.** First real Windows install: greywolf, 2026-11-25
+Same design, same `hooks/ferry_config.py`; needs Python 3.8+. **Ported; was untested
+on a Windows machine as of 2026-11-03.** First real Windows install: 2026-11-25
 (three `install.ps1` fixes; see git log).
 
 ## How Compression Works

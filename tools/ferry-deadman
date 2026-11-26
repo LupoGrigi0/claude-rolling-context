@@ -19,7 +19,7 @@
 # your real settings.json. Test with FERRY_DEADMAN_DRY=1, which only says what it
 # would do. (Measured the hard way, 2026-11-25: a "sandboxed" test withdrew the
 # real base URL. Safe direction, re-pointed in a minute, but it fired.)
-# First used by Lantern-4224 on greywolf (Windows), 2026-11-25. It never had to fire.
+# First used on a real Windows install, 2026-11-25. It never had to fire.
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE="${FERRY_DATA:-$HOME/ferry-data}"
