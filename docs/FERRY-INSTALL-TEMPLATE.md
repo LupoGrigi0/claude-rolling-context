@@ -121,8 +121,11 @@ the output.** A refusal names its reason and changes nothing.
 - `WARNING: ~/.local/bin is not on PATH` is expected on some hosts and non-blocking — curated
   prefixes name `ferry-fetch` by absolute path.
 - **No restart is needed: the running session picks up the new base URL live.** Current
-  Claude Code re-reads `settings.json` when it changes (permissions, model routing, base URL),
-  so the next request goes through Ferry. Measured three times: 2026-11-16 on Linux (~493k-context
+  Claude Code re-reads `settings.json` when a value is SET or CHANGED (permissions, model
+  routing, base URL), so the next request goes through Ferry. **A DELETED key is not picked
+  up:** the session keeps the old value (measured 2026-11-26, n=1 per direction, Claude Code
+  2.1.285: Lantern on Windows, 14 h of ECONNREFUSED to a dead proxy after the key was
+  deleted; reproduced by Crossing on Linux). See Rollback. Measured three times: 2026-11-16 on Linux (~493k-context
   requests through the proxy 25 s after install, before any relaunch) and 2026-11-25 on
   Windows (the mind's own request in `metrics.csv` 8 s after install), and 2026-11-25 again on Linux (a request row in the
   same second as the check). Still read the
@@ -185,7 +188,8 @@ the mind's own words. That report is the evidence.
 ```bash
 bash FERRY/uninstall.sh      # removes ONLY the base URL Ferry wrote
 ```
-No restart: the next request goes direct to Anthropic again (settings.json is re-read live). The
+uninstall *replaces* the base URL with your real route (it never deletes it), so the next
+request goes direct, no restart. **The emergency off-switch for Ferry is to SET ANTHROPIC_BASE_URL to https://api.anthropic.com (or your real upstream). Never DELETE it: a running session ignores a deleted key and keeps sending to the dead port.** The
 archive stays in `~/ferry-data`. See `docs/RUNBOOK.md` for the 3am page.
 
 ## Run log

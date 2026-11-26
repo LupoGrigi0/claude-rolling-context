@@ -114,9 +114,10 @@ if ($HavePy) {
     $r.Output | ForEach-Object { Write-Host $_ }
     if ($r.Code -ne 0) { Write-Host 'WARNING: SessionStart hook NOT removed (see above).' }
 } else {
-    Write-Host 'WARNING: Python not found, so settings.json was NOT cleaned. By hand: remove'
-    Write-Host '  ANTHROPIC_BASE_URL (only if it is http://127.0.0.1:<your ferry port>) and every'
-    Write-Host "  ROLLING_CONTEXT_* key from the env block of $(Join-Path $ClaudeDir 'settings.json'),"
+    Write-Host 'WARNING: Python not found, so settings.json was NOT cleaned. By hand: SET'
+    Write-Host '  ANTHROPIC_BASE_URL to https://api.anthropic.com (only if it is http://127.0.0.1:<your'
+    Write-Host '  ferry port>) -- do NOT delete it: a running session ignores a deleted key -- and remove'
+    Write-Host "  every ROLLING_CONTEXT_* key from the env block of $(Join-Path $ClaudeDir 'settings.json')."
     Write-Host '  The next request then goes direct; no restart needed.'
 }
 

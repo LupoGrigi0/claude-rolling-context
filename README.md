@@ -135,8 +135,11 @@ URL Ferry wrote. No restart is needed: current Claude Code re-reads `settings.js
 live, so the next request goes through Ferry. Requires Python
 3.7+ (pure stdlib).
 
-**Rollback:** remove Ferry's `ANTHROPIC_BASE_URL` from `settings.json` (or run
-`uninstall.sh`); the next request goes direct, no restart. See `docs/RUNBOOK.md`.
+**Rollback:** run `uninstall.sh` (or `uninstall.ps1`): it *replaces* Ferry's
+`ANTHROPIC_BASE_URL` with your real route, and the next request goes direct, no restart.
+**Never delete the key by hand:** a running session ignores a deleted key and keeps
+sending to the dead port (measured: 14 h of ECONNREFUSED, 2026-11-26).
+**The emergency off-switch for Ferry is to SET ANTHROPIC_BASE_URL to https://api.anthropic.com (or your real upstream). Never DELETE it: a running session ignores a deleted key and keeps sending to the dead port.** See `docs/RUNBOOK.md`.
 
 ### Windows
 

@@ -34,16 +34,19 @@ Also: `[FERRY] ERROR: ...` at the top of the mind's session is the hook failing 
 
 ## 2. Rollback: take the mind off Ferry
 
-1. Remove Ferry's `ANTHROPIC_BASE_URL` from `S` — or run `bash ~/claude-rolling-context/uninstall.sh`
-   (removes only what Ferry wrote; if a non-Anthropic `ferry.upstream` is declared it puts that route back).
-   By hand: delete `env.ANTHROPIC_BASE_URL` and `env.ROLLING_CONTEXT_WROTE_BASE_URL`.
+> **The emergency off-switch for Ferry is to SET ANTHROPIC_BASE_URL to https://api.anthropic.com (or your real upstream). Never DELETE it: a running session ignores a deleted key and keeps sending to the dead port.**
+
+1. Run `bash ~/claude-rolling-context/uninstall.sh` (it replaces only what Ferry wrote with your
+   real route: `https://api.anthropic.com`, or a declared non-Anthropic `ferry.upstream`).
+   By hand: SET `env.ANTHROPIC_BASE_URL` to `https://api.anthropic.com`. Do NOT delete it:
+   a running session ignores the deletion (measured 2026-11-26, 14 h of ECONNREFUSED).
    **Not on Anthropic?** Set `env.ANTHROPIC_BASE_URL` to the `ferry.upstream` value instead of deleting — deleting sends that key to Anthropic.
 2. Stop the hook re-pointing it next session: uninstall (above), or remove Ferry's
    `SessionStart` entry from `S` (`hooks` → the command running `.../hooks/start-proxy.sh`).
-3. **No restart needed:** Claude Code re-reads `S` when it changes — the next request
-   goes direct. (Cairn's metrics show requests through the proxy 25 s after install
-   wrote `S`, before any relaunch, 2026-11-16 — inferred from the receiver's record.)
-   Measured again on Windows 2026-11-25 (8 s). Never `claude --bg --resume` a running session — it forks.
+3. **No restart needed, because step 1 SETS the key:** Claude Code picks up a set or changed
+   value live (install: 25 s on Linux 2026-11-16, 8 s on Windows 2026-11-25; a set to
+   api.anthropic.com: seconds, Crossing 2026-11-26). It does NOT pick up a deletion. n=1 per
+   direction, Claude Code 2.1.285; if in doubt, read the receiver (metrics.csv stops growing). Never `claude --bg --resume` a running session — it forks.
 
 Restore later: `bash install.sh` again, canary. No restart.
 

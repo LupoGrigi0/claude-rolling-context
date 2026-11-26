@@ -5,8 +5,20 @@
 # breaks the route, the mind cannot fix it: its next request never arrives. So
 # arm this FIRST, in the background, then install. It waits; if the mind has not
 # shown it is alive by then, it withdraws ONLY the base URL Ferry wrote
-# (`ferry_config.py withdraw`), and since settings.json is re-read live the next
-# request goes direct to the upstream again. Nothing else is touched.
+# (`ferry_config.py withdraw`, which since b8d3b6e REPLACES it with the real route).
+# A replaced value is picked up live, so the next request goes direct. Nothing else
+# is touched.
+#
+# CORRECTED 2026-11-26, left visible on purpose: this header used to promise that
+# withdraw rescued a running session. Before b8d3b6e, withdraw DELETED the key, and a
+# running session ignores a deleted key: on its first real firing (a Windows install, 11-25)
+# this switch withdrew correctly and the session still sent to the dead port for 14 h.
+# I had measured the live pick-up in one direction only (setting), and promised both.
+# -- Lantern-4224
+#
+# Even now it guards the ROUTE, not the PROXY. If the proxy dies after you disarm,
+# this does nothing. An outside restarter that brings the port back (Lodestone's
+# supervisor, Ferry's watchdog) is the stronger net.
 #
 #   tools/ferry-deadman 900 &          # arm: 15 minutes (default 600 s)
 #   bash install.sh                    # or install.ps1 on Windows
