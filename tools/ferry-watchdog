@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# ferry-watchdog -- the OUTSIDE actor that repairs a mind's Ferry (F10).
+#
+# A mind whose proxy is broken cannot think, so it cannot fix the proxy. This is
+# run by cron, as the mind's own user (no root, no service manager), e.g.:
+#
+#   */5 * * * * /path/to/claude-rolling-context/tools/ferry-watchdog >> ~/ferry-data/watchdog.log 2>&1
+#
+# Healthy (the canary passes): do nothing, say nothing.
+# Not healthy: run bin/ferry-restart, which brings Ferry back, ROLLS BACK to the
+# last good commit, or WITHDRAWS Ferry so the mind goes direct -- and then
+# ALERT, because a rolled-back or withdrawn mind is not where it was told to be
+# (withdrawn = uncurated, heading for its wall). The alert is HACS mail to the
+# mind itself (its doorbell rings once it can think again) and, if set, to
+# FERRY_ALERT_TO. Requested by Zara-c207 + Forge-ba0e, 2026-11-26.
+set -uo pipefail
+HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+HACS="${FERRY_HACS:-/usr/local/bin/hacs}"
+
+conf=$(python3 "$HERE/hooks/ferry_config.py" env) || exit 1
+eval "$conf"
+DATA="${FERRY_DATA:-$HOME/ferry-data}"
+mkdir -p "$DATA" || { echo "ferry-watchdog: cannot create $DATA" >&2; exit 1; }
+# Never two at once. Busy lock = another watchdog is on it (exit 0); a lock we
+# cannot even OPEN is an error, not "busy" -- that conflation once made this
+# watchdog a silent no-op on a fresh home, the exact case it exists for.
+exec 9>"$DATA/watchdog.lock" || { echo "ferry-watchdog: cannot open lock" >&2; exit 1; }
+flock -n 9 || exit 0
+
+python3 "$HERE/tools/ferry-canary" >/dev/null 2>&1 && exit 0
+
+ts=$(date -u +%FT%TZ)
+out=$(bash "$HERE/bin/ferry-restart" 2>&1); rc=$?
+case $rc in
+    0) verdict="RESTARTED: Ferry was unhealthy and is serving again" ;;
+    3) verdict="ROLLED BACK to the last good commit -- Ferry serving, but NOT on the code you pulled" ;;
+    *) verdict="WITHDRAWN -- no good Ferry; this mind now goes DIRECT and is UNCURATED (heading for its wall)" ;;
+esac
+msg="[ferry-watchdog] $ts on port ${ROLLING_CONTEXT_PORT:-?}: $verdict
+
+ferry-restart said:
+$(printf '%s\n' "$out" | tail -8)
+
+See docs/RUNBOOK.md."
+echo "$msg"
+if [ -x "$HACS" ]; then
+    me=$("$HACS" whoami 2>/dev/null || true)
+    for to in $me ${FERRY_ALERT_TO:-}; do
+        printf '%s\n' "$msg" | "$HACS" send "$to" "[ferry-watchdog] $verdict" - >/dev/null 2>&1 \
+            || echo "ferry-watchdog: alert to $to FAILED" >&2
+    done
+fi
+exit $rc
