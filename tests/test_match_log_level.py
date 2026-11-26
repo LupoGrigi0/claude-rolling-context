@@ -38,10 +38,10 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "proxy"))
-os.environ.setdefault("ROLLING_CONTEXT_HOME", "/tmp/.matchlog-test-home")
+os.environ.setdefault("ROLLING_CONTEXT_HOME", __import__("os").path.join(__import__("tempfile").gettempdir(), ".matchlog-test-home"))
 # Keep the suite OUT of the production debug log -- importing server.py
 # installs a FileHandler, and this suite exists BECAUSE that log got polluted.
-os.environ.setdefault("ROLLING_CONTEXT_LOG", "/tmp/.ferry-test-debug.log")
+os.environ.setdefault("ROLLING_CONTEXT_LOG", __import__("os").path.join(__import__("tempfile").gettempdir(), ".ferry-test-debug.log"))
 
 spec = importlib.util.spec_from_file_location(
     "srv", HERE.parent / "proxy" / "server.py")

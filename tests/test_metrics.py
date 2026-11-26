@@ -32,7 +32,7 @@ sys.path.insert(0, str(REPO / "proxy"))
 # of them were sitting above a genuine strike on 2026-08-28.
 # Set BEFORE the proxy modules are imported -- the handler is installed at
 # import time, so doing this afterwards would be far too late.
-os.environ.setdefault("ROLLING_CONTEXT_LOG", "/tmp/.ferry-test-debug.log")
+os.environ.setdefault("ROLLING_CONTEXT_LOG", __import__("os").path.join(__import__("tempfile").gettempdir(), ".ferry-test-debug.log"))
 
 import metrics  # noqa: E402
 from metrics import (EVENTS, HEADER, HEADER_LINE, ArchiveTotals,  # noqa: E402

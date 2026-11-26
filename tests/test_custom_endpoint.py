@@ -30,7 +30,7 @@ import os as _os_log_guard
 # installs a FileHandler on ~/.claude/rolling-context-debug.log, so every
 # test run appended THRASH WARNINGS to the file a real incident is
 # diagnosed from. Six of them were sitting above a genuine strike.
-_os_log_guard.environ.setdefault("ROLLING_CONTEXT_LOG", "/tmp/.ferry-test-debug.log")
+_os_log_guard.environ.setdefault("ROLLING_CONTEXT_LOG", __import__("os").path.join(__import__("tempfile").gettempdir(), ".ferry-test-debug.log"))
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROXY = os.path.join(HERE, "..", "proxy")

@@ -39,8 +39,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "proxy"))
-os.environ.setdefault("ROLLING_CONTEXT_HOME", "/tmp/.floor-test-home")
-os.environ.setdefault("ROLLING_CONTEXT_LOG", "/tmp/.ferry-test-debug.log")
+os.environ.setdefault("ROLLING_CONTEXT_HOME", __import__("os").path.join(__import__("tempfile").gettempdir(), ".floor-test-home"))
+os.environ.setdefault("ROLLING_CONTEXT_LOG", __import__("os").path.join(__import__("tempfile").gettempdir(), ".ferry-test-debug.log"))
 
 spec = importlib.util.spec_from_file_location(
     "ferry_compressor", HERE.parent / "proxy" / "compressor.py")

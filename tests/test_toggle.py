@@ -38,7 +38,7 @@ import os as _os_log_guard
 # installs a FileHandler on ~/.claude/rolling-context-debug.log, so every
 # test run appended THRASH WARNINGS to the file a real incident is
 # diagnosed from. Six of them were sitting above a genuine strike.
-_os_log_guard.environ.setdefault("ROLLING_CONTEXT_LOG", "/tmp/.ferry-test-debug.log")
+_os_log_guard.environ.setdefault("ROLLING_CONTEXT_LOG", __import__("os").path.join(__import__("tempfile").gettempdir(), ".ferry-test-debug.log"))
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROXY = os.path.join(HERE, "..", "proxy")
@@ -236,12 +236,22 @@ def start_stack(work, switch_home, mock_port, proxy_port, log):
                     ROLLING_CONTEXT_UPSTREAM=f"http://127.0.0.1:{mock_port}",
                     ROLLING_CONTEXT_HOME=switch_home,
                     ROLLING_CONTEXT_TRIGGER="1000", ROLLING_CONTEXT_TARGET="400")
+    # DEVNULL on BOTH children: an orphan that inherits the runner's stdout pipe
+    # blocks run_all.py forever (Lantern, Windows, 2026-11-26: 6,568 s).
     mock = subprocess.Popen([sys.executable, MOCK, str(mock_port), log],
-                            env=dict(os.environ, MOCK_STRICT="0"))
+                            env=dict(os.environ, MOCK_STRICT="0"),
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     proxy = subprocess.Popen([sys.executable, "server.py"], cwd=PROXY, env=env,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    assert wait_port(mock_port), "mock endpoint did not start"
-    assert wait_port(proxy_port), "proxy did not start"
+    if not (wait_port(mock_port) and wait_port(proxy_port)):
+        # Never leave a child behind on the failure path.
+        for p in (proxy, mock):
+            p.terminate()
+            try:
+                p.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                p.kill()
+        raise AssertionError("mock endpoint or proxy did not start")
     return mock, proxy
 
 

@@ -45,8 +45,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "proxy"))
-os.environ.setdefault("ROLLING_CONTEXT_HOME", "/tmp/.liveness-test-home")
-os.environ.setdefault("ROLLING_CONTEXT_LOG", "/tmp/.ferry-test-debug.log")
+os.environ.setdefault("ROLLING_CONTEXT_HOME", __import__("os").path.join(__import__("tempfile").gettempdir(), ".liveness-test-home"))
+os.environ.setdefault("ROLLING_CONTEXT_LOG", __import__("os").path.join(__import__("tempfile").gettempdir(), ".ferry-test-debug.log"))
 # metrics are a Ferry feature and get_writer returns None outside curation mode
 os.environ.setdefault("ROLLING_CONTEXT_CURATION", "ferry")
 
