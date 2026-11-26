@@ -44,10 +44,16 @@ import uuid
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG = os.path.join(HERE, "..", "hooks", "ferry_config.py")
 OK, FAIL, COULD_NOT_LOOK = 0, 1, 2
+# The proxy answered and is healthy, but its UPSTREAM is unreachable or failing.
+# Not Ferry's fault, and restarting Ferry cannot fix it: a watchdog must WAIT on
+# this, never restart, roll back or withdraw (Forge, 2026-11-26 -- otherwise one
+# ISP blip withdraws every mind at once). Bastion asked for this split on 11-03.
+UPSTREAM_DOWN = 4
 
 
 def done(code, msg):
-    label = {OK: "OK", FAIL: "FAIL", COULD_NOT_LOOK: "COULD-NOT-LOOK"}[code]
+    label = {OK: "OK", FAIL: "FAIL", COULD_NOT_LOOK: "COULD-NOT-LOOK",
+             UPSTREAM_DOWN: "UPSTREAM-DOWN"}[code]
     print(f"ferry-canary: {label}: {msg}", file=sys.stdout if code == OK else sys.stderr)
     sys.exit(code)
 
@@ -153,9 +159,11 @@ def main():
     if nonce not in headers.get("x-ferry-canary", []):
         done(FAIL, f"forwarded request via port {port} was not answered by the proxy")
     if status == 502:
-        done(FAIL, f"proxy on port {port} could not reach its upstream (HTTP 502)")
+        done(UPSTREAM_DOWN, f"proxy on port {port} is healthy but could not reach its "
+                            f"upstream (HTTP 502) -- not Ferry; wait, do not restart")
     if status >= 500:
-        done(FAIL, f"upstream via port {port} answered HTTP {status}")
+        done(UPSTREAM_DOWN, f"proxy on port {port} is healthy; upstream answered HTTP "
+                            f"{status} -- not Ferry; wait, do not restart")
     done(OK, f"port {port} is this mind's proxy ({want_data}), no thrash "
              f"lockout, upstream answered HTTP {status}")
 

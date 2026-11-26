@@ -109,6 +109,8 @@ for _ in $(seq 60); do
     if $CONF holds-port "$PID" "$PORT"; then
         echo "$PID" > "$PIDFILE"
         log "Proxy started with PID $PID, verified on port $PORT"
+        # Which code is serving, for bin/ferry-restart's rollback (F10).
+        git -C "$SCRIPT_DIR/.." rev-parse HEAD > "$FERRY_DATA/started-commit" 2>/dev/null || true
         point_settings
         exit 0
     fi

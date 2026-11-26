@@ -70,5 +70,10 @@ echo "  ROLLING_CONTEXT_UPSTREAM = $ROLLING_CONTEXT_UPSTREAM"
 echo "  FERRY_DATA               = $FERRY_DATA"
 echo "  settings.json            = $CLAUDE_DIR/settings.json"
 echo ""
+if [ -z "${FERRY_ALERT_TO:-}" ]; then
+    echo "  NOTE: no \"alert_to\" in your ferry block. Watchdog alerts will reach only this"
+    echo "        mind -- which, if its Ferry is broken, may not be able to act. Name a human"
+    echo "        steward (their HACS id) as \"alert_to\"."
+fi
 echo "Prove it once:  python3 $SCRIPT_DIR/tools/ferry-canary"
 echo "No restart needed: the running session re-reads settings.json; check tail $FERRY_DATA/metrics.csv."

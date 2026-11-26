@@ -55,6 +55,7 @@ FIELDS = {
     "port": "ROLLING_CONTEXT_PORT",
     "data_dir": "FERRY_DATA",
     "upstream": "ROLLING_CONTEXT_UPSTREAM",
+    "alert_to": "FERRY_ALERT_TO",           # a HUMAN steward for watchdog alerts
     "trigger": "ROLLING_CONTEXT_TRIGGER",   # curate when context passes this (tokens)
     "target": "ROLLING_CONTEXT_TARGET",     # ...down to about this
 }
