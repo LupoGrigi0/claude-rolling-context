@@ -1619,7 +1619,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 _now = time.monotonic()
                 _gate_ok, _gate_why = _hysteresis_gate(total_input, _now, log)
                 if already_compressing:
-                    pass
+                    log.info(f"[MSG] {total_input:,} over trigger but HOLDING -- "
+                             f"a compression is already running")
+                    _note_gate("held: compression already running", total_input,
+                               model=model, window=_window)
                 elif not _gate_ok:
                     # Not an error and not a defect — this is the system
                     # declining to do useless work. INFO, and say WHY, because
@@ -1654,6 +1657,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     )
                     t.start()
                     entry["thread"] = t
+
+            # The one remaining SILENT way past the trigger (production, Zara,
+            # 2026-11-26: 802k, no curation, no log line, no gate row). Every
+            # "over trigger and did nothing" must say why.
+            if (not disabled and total_input > TRIGGER_TOKENS
+                    and len(current_messages) < 6):
+                log.warning(f"[MSG] {total_input:,} over trigger but NOT curating -- "
+                            f"only {len(current_messages)} message(s) in the request "
+                            f"(minimum 6): the bulk is in too few messages to evict")
+                _note_gate(f"skipped: only {len(current_messages)} messages (min 6)",
+                           total_input, model=model, window=_window)
 
         except Exception as e:
             log.error(f"[MSG] Upstream error: {e}", exc_info=True)
