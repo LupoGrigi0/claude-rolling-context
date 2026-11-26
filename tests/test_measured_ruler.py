@@ -54,5 +54,15 @@ m2, u2, s2 = comp.measured_split(real, msg_chars, None)
 check("no payload -> falls back to chars/4, and SAYS it is an estimate",
       s2.startswith("ESTIMATED") and u2 == comp.effective_unevictable(real, msg_chars), s2)
 
+# Forge's blocker: Zara's in-turn request -- 904 chars, usage 816,746 (server
+# holds the context). Never a "measured" ruler of 0.001 chars/token.
+m3, u3, s3 = comp.measured_split(816_746, 904, {"system": "s" * 20_000, "tools": []})
+check("incremental request (0.03 chars/token) -> NOT labelled measured", s3.startswith("ESTIMATED"), s3)
+check("...and says why (outside the band)", "outside" in s3, s3)
+_, _, s4 = comp.measured_split(int(2_000_000 / 9), 1_900_000, {"system": "s" * 100_000, "tools": []})
+check("absurdly high ratio (9 chars/token) -> fallback too", s4.startswith("ESTIMATED"), s4)
+_, _, s5 = comp.measured_split(int(1_571_284 / 2.7), msg_chars, payload)
+check("control: Zara's real 2.7 chars/token is inside the band -> measured", s5.startswith("measured"), s5)
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

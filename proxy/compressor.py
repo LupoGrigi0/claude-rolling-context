@@ -250,6 +250,9 @@ def effective_unevictable(real_token_count, msg_chars, observed_floor=None):
     return est
 
 
+CPT_MIN, CPT_MAX = 1.5, 6.0   # plausible chars/token for text + code
+
+
 def measured_split(real_token_count, msg_chars, payload, observed_floor=None):
     """-> (msg_tokens, unevictable, source). F2: size the bite on a MEASURED ruler.
 
@@ -271,6 +274,18 @@ def measured_split(real_token_count, msg_chars, payload, observed_floor=None):
     """
     sc, tc, _ = scaffolding_chars(payload)
     total = sc + tc + msg_chars
+    ratio = total / real_token_count if real_token_count else 0
+    # PLAUSIBILITY BAND (Forge's review, 2026-11-26). The ratio is only a ruler
+    # if this request carries what the usage counts. An in-turn request holds
+    # 1-2 messages while usage reports the whole server-held context (Zara: 904
+    # chars at 816,746 tokens = 0.001 chars/token), and images, documents and
+    # thinking count in usage but not in these chars. Outside the band, the
+    # "measurement" is measuring the wrong thing: fall back, and say so.
+    if real_token_count and total > 0 and (sc + tc) > 0 and not (CPT_MIN <= ratio <= CPT_MAX):
+        msg_tokens = max(1, msg_chars // 4)
+        return (msg_tokens, effective_unevictable(real_token_count, msg_chars, observed_floor),
+                f"ESTIMATED from chars/4: measured {ratio:.3f} chars/token is outside "
+                f"{CPT_MIN}-{CPT_MAX} (incremental request, or images/thinking dominate)")
     if real_token_count and total > 0 and (sc + tc) > 0:
         msg_tokens = max(1, int(real_token_count * msg_chars / total))
         unevictable = max(0, real_token_count - msg_tokens)
