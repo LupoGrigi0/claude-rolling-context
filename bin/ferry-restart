@@ -19,7 +19,22 @@
 # Exit 0 only when step 5 passes. Rollback if it fails: docs/RUNBOOK.md.
 set -uo pipefail
 
-HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+# F10 -- AUTOMATIC ROLLBACK. If the new code does not come up and pass the
+# canary, check out the last commit that DID, and bring that up; if there is
+# none, or it fails too, withdraw Ferry's base URL so the mind goes direct.
+# All in this one process: a mind whose proxy is broken cannot act to fix it
+# (Lantern, 2026-11-25/26 -- hours on a dead route). Exit 0 = new code serving,
+# 3 = ROLLED BACK and serving, 1 = withdrawn (mind direct, no Ferry).
+#
+# Rollback rewrites this very file (git checkout), and bash reads a script as
+# it runs -- so run from a private copy.
+if [ -z "${FERRY_RESTART_HERE:-}" ]; then
+    FERRY_RESTART_HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+    _copy=$(mktemp) && cp "${BASH_SOURCE[0]}" "$_copy" || exit 1
+    FERRY_RESTART_HERE="$FERRY_RESTART_HERE" exec bash "$_copy" "$@"
+fi
+HERE="$FERRY_RESTART_HERE"
+trap 'rm -f "$0"' EXIT
 CONF="python3 $HERE/hooks/ferry_config.py"
 die() { echo "ferry-restart: $1" >&2; exit 1; }
 
@@ -44,6 +59,36 @@ else
     echo "ferry-restart: no proxy was running on port $PORT; starting one"
 fi
 
-bash "$HERE/hooks/start-proxy.sh" || die "the new proxy did not start; see ~/.claude/rolling-context-hook.log"
-python3 "$HERE/tools/ferry-canary" || die "new proxy started but the canary FAILED -- see above"
-echo "ferry-restart: OK -- Ferry is serving on port $PORT (pid $($CONF who-holds "$PORT"))"
+GOOD="$FERRY_DATA/last-good-commit"
+PREV=$(cat "$GOOD" 2>/dev/null || cat "$FERRY_DATA/started-commit" 2>/dev/null || true)
+NOW=$(git -C "$HERE" rev-parse HEAD 2>/dev/null || true)
+
+bring_up() {   # start through the ONE launcher, then prove it
+    bash "$HERE/hooks/start-proxy.sh" && python3 "$HERE/tools/ferry-canary"
+}
+stop_ours() {  # stop only OUR Ferry on the port, if anything of ours is there
+    local p; p=$($CONF who-holds "$PORT" 2>/dev/null) || return 0
+    $CONF is-proxy "$p" && kill "$p" 2>/dev/null
+    for _ in $(seq 1 50); do $CONF holds-port "$p" "$PORT" 2>/dev/null || break; sleep 0.2; done
+}
+
+if bring_up; then
+    [ -n "$NOW" ] && echo "$NOW" > "$GOOD"
+    echo "ferry-restart: OK -- Ferry is serving on port $PORT (pid $($CONF who-holds "$PORT"))"
+    exit 0
+fi
+
+echo "ferry-restart: the NEW code (${NOW:0:7}) failed to come up or failed the canary" >&2
+stop_ours
+if [ -n "$PREV" ] && [ "$PREV" != "$NOW" ] && git -C "$HERE" cat-file -e "$PREV^{commit}" 2>/dev/null \
+        && git -C "$HERE" checkout -q --detach "$PREV" 2>/dev/null; then
+    echo "ferry-restart: ROLLING BACK to the last good commit ${PREV:0:7}" >&2
+    if bring_up; then
+        echo "ferry-restart: ROLLED BACK -- Ferry serving on ${PREV:0:7} (pid $($CONF who-holds "$PORT")). The clone is on a detached HEAD; 'git checkout master' to try again." >&2
+        exit 3
+    fi
+    stop_ours
+fi
+$CONF withdraw >/dev/null 2>&1
+echo "ferry-restart: WITHDRAWN -- no good Ferry could be brought up; Ferry's base URL is removed and the mind goes DIRECT to its upstream. See docs/RUNBOOK.md." >&2
+exit 1
