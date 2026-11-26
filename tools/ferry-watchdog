@@ -41,7 +41,7 @@ else
 fi
 
 canary_out=$(python3 "$HERE/tools/ferry-canary" 9>&- 2>&1); canary_rc=$?
-if [ $canary_rc -eq 3 ]; then
+if [ $canary_rc -eq 4 ]; then
     # Proxy healthy, UPSTREAM down. Restarting Ferry cannot fix that, and the
     # rollback chain would end by WITHDRAWING Ferry over a network blip. Wait.
     echo "[ferry-watchdog] $(date -u +%FT%TZ): $canary_out (waiting)"

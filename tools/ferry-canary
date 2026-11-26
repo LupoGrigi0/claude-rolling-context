@@ -48,7 +48,7 @@ OK, FAIL, COULD_NOT_LOOK = 0, 1, 2
 # Not Ferry's fault, and restarting Ferry cannot fix it: a watchdog must WAIT on
 # this, never restart, roll back or withdraw (Forge, 2026-11-26 -- otherwise one
 # ISP blip withdraws every mind at once). Bastion asked for this split on 11-03.
-UPSTREAM_DOWN = 3
+UPSTREAM_DOWN = 4
 
 
 def done(code, msg):

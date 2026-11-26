@@ -119,8 +119,8 @@ try:
     stub.shutdown(); stub.server_close()
     _c = subprocess.run([sys.executable, str(REPO / "tools" / "ferry-canary")], env=env,
                         capture_output=True, text=True, timeout=120)
-    check("canary says UPSTREAM-DOWN with exit 3 (not a crash, not FAIL)",
-          _c.returncode == 3 and "UPSTREAM-DOWN" in _c.stdout + _c.stderr,
+    check("canary says UPSTREAM-DOWN with exit 4 (not a crash, not FAIL)",
+          _c.returncode == 4 and "UPSTREAM-DOWN" in _c.stdout + _c.stderr,
           (_c.returncode, (_c.stdout + _c.stderr)[-200:]))
     code, out = wd()
     check("upstream down -> watchdog exits 0 and WAITS", code == 0 and "waiting" in out, out[-300:])

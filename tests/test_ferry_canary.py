@@ -131,7 +131,7 @@ try:
 
     Stub.status = 503
     code, out = canary("--port", str(proxy_port), "--data", data)
-    check("upstream 5xx -> exit 3 (UPSTREAM-DOWN, not a Ferry fault)", code, 3)
+    check("upstream 5xx -> exit 4 (UPSTREAM-DOWN, not a Ferry fault)", code, 4)
     Stub.status = 401
 
     # Upstream gone entirely: the proxy answers 502 itself.
@@ -139,7 +139,7 @@ try:
     srv._parsed_upstream = srv.urlparse(f"http://127.0.0.1:{free_closed_port()}")
     code, out = canary("--port", str(proxy_port), "--data", data)
     srv._parsed_upstream = saved
-    check("upstream unreachable -> exit 3 (UPSTREAM-DOWN, not a Ferry fault)", code, 3)
+    check("upstream unreachable -> exit 4 (UPSTREAM-DOWN, not a Ferry fault)", code, 4)
     check("upstream unreachable -> 'HTTP 502'", "HTTP 502" in out, True)
 
     # COULD-NOT-LOOK: no flags, and no ~/preferences.json declares a port.
