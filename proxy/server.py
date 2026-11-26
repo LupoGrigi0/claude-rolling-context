@@ -101,8 +101,13 @@ def _log_filename():
 _log_path = _log_filename()
 # umask covers NEW files; an existing log keeps its old mode (0664 under the box
 # default). It can hold message content, so make it owner-only too.
+# POSIX only: Windows Python has no os.getuid, and the proxy died AT IMPORT
+# there (Lodestone/Lantern, 2026-11-26 -- a mind lost its route for hours).
+# Windows privacy is the user profile's ACL, not mode bits.
+_POSIX_UID = os.getuid() if hasattr(os, "getuid") else None
 try:
-    if os.path.exists(_log_path) and os.stat(_log_path).st_uid == os.getuid():
+    if (_POSIX_UID is not None and os.path.exists(_log_path)
+            and os.stat(_log_path).st_uid == _POSIX_UID):
         os.chmod(_log_path, 0o600)
 except OSError:
     pass
@@ -836,8 +841,8 @@ if _persist_path:
     # gate: 0700 here keeps every file under it private, old modes or not.
     # ...and every file already under it (metrics.csv, proxy-state.json, the
     # archive): umask cannot touch existing files (Forge, 2026-11-26).
-    _uid = os.getuid()
-    for _root, _dirs, _files in os.walk(_ferry_data):
+    _uid = _POSIX_UID
+    for _root, _dirs, _files in ([] if _uid is None else os.walk(_ferry_data)):
         for _name, _mode in [(_root, 0o700)] + [(os.path.join(_root, f), 0o600) for f in _files]:
             try:
                 _st = os.lstat(_name)
