@@ -112,6 +112,22 @@ try:
     code, out = wd()                         # healthy -> silent
     check("control: healthy Ferry -> exit 0", code == 0, out[-200:])
     check("control: healthy Ferry -> NO alert", not alerts.exists())
+
+    # Forge's blocker: the UPSTREAM dies (network blip), Ferry is fine. The
+    # watchdog must wait -- no restart, no rollback, no withdraw, no alert.
+    before = holder()
+    stub.shutdown(); stub.server_close()
+    _c = subprocess.run([sys.executable, str(REPO / "tools" / "ferry-canary")], env=env,
+                        capture_output=True, text=True, timeout=120)
+    check("canary says UPSTREAM-DOWN with exit 3 (not a crash, not FAIL)",
+          _c.returncode == 3 and "UPSTREAM-DOWN" in _c.stdout + _c.stderr,
+          (_c.returncode, (_c.stdout + _c.stderr)[-200:]))
+    code, out = wd()
+    check("upstream down -> watchdog exits 0 and WAITS", code == 0 and "waiting" in out, out[-300:])
+    check("...the SAME proxy pid still serves (no restart)", holder() == before, (before, holder()))
+    check("...no alert for a blip that is not Ferry's", not alerts.exists())
+    sj = json.loads((cfg / "settings.json").read_text()).get("env", {})
+    check("...and Ferry is NOT withdrawn", sj.get("ANTHROPIC_BASE_URL") == f"http://127.0.0.1:{port}", sj)
 finally:
     for pid in seen:
         try:
@@ -119,7 +135,10 @@ finally:
                 os.kill(pid, signal.SIGTERM)
         except OSError:
             pass
-    stub.shutdown()
+    try:
+        stub.shutdown()
+    except Exception:
+        pass
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

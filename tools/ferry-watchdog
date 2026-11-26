@@ -40,7 +40,14 @@ else
     rm -f "$DATA/detached-alerted"
 fi
 
-if python3 "$HERE/tools/ferry-canary" >/dev/null 2>&1; then
+canary_out=$(python3 "$HERE/tools/ferry-canary" 9>&- 2>&1); canary_rc=$?
+if [ $canary_rc -eq 3 ]; then
+    # Proxy healthy, UPSTREAM down. Restarting Ferry cannot fix that, and the
+    # rollback chain would end by WITHDRAWING Ferry over a network blip. Wait.
+    echo "[ferry-watchdog] $(date -u +%FT%TZ): $canary_out (waiting)"
+    exit 0
+fi
+if [ $canary_rc -eq 0 ]; then
     [ -z "${DETACHED:-}" ] && exit 0
     msg="[ferry-watchdog] $(date -u +%FT%TZ): $DETACHED"
     echo "$msg"
@@ -54,7 +61,11 @@ if python3 "$HERE/tools/ferry-canary" >/dev/null 2>&1; then
 fi
 
 ts=$(date -u +%FT%TZ)
-out=$(bash "$HERE/bin/ferry-restart" 2>&1); rc=$?
+# 9>&- : the proxy ferry-restart starts would otherwise INHERIT the lock fd and
+# hold it for its whole life -- every later watchdog run would see "busy" and
+# exit 0 silently. Measured in this suite, 2026-11-26: the watchdog died after
+# its first repair.
+out=$(bash "$HERE/bin/ferry-restart" 9>&- 2>&1); rc=$?
 case $rc in
     0) verdict="RESTARTED: Ferry was unhealthy and is serving again" ;;
     3) verdict="ROLLED BACK to the last good commit -- Ferry serving, but NOT on the code you pulled" ;;
@@ -69,6 +80,7 @@ See docs/RUNBOOK.md."
 echo "$msg"
 if [ -x "$HACS" ]; then
     me=$("$HACS" whoami 2>/dev/null || true)
+    [ -z "$me$FERRY_ALERT_TO" ] && echo "ferry-watchdog: ALERT HAD NO RECIPIENT (hacs whoami failed, no alert_to) -- only this log saw it" >&2
     for to in $me ${FERRY_ALERT_TO:-}; do
         printf '%s\n' "$msg" | "$HACS" send "$to" "[ferry-watchdog] $verdict" - >/dev/null 2>&1 \
             || echo "ferry-watchdog: alert to $to FAILED" >&2

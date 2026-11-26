@@ -79,6 +79,17 @@ curl -s 127.0.0.1:<port>/health | grep -oE '"(curation_mode|trigger_tokens|targe
 ```
 `curation_mode` must be `"ferry"`. Anything else **summarises** (paraphrases).
 
+### Automatic repair (tools/ferry-watchdog, run from the mind's own cron)
+`*/5 * * * * <clone>/tools/ferry-watchdog >> ~/ferry-data/watchdog.log 2>&1`
+- **Healthy:** silent. **Upstream down** (canary exit 3, `UPSTREAM-DOWN`): it
+  WAITS -- a network blip is not Ferry's fault and never triggers a restart.
+- **Ferry broken:** `ferry-restart` restarts; if the new code fails it **rolls
+  back** to the last good commit; if nothing works it **withdraws** Ferry (the
+  mind goes direct, uncurated). Each outcome ALERTS the mind and `alert_to`.
+- **After a rollback** the mind runs fine on an OLD commit, on a detached HEAD,
+  and looks healthy. The watchdog alerts once; recover with
+  `git -C <clone> checkout master && <clone>/bin/ferry-restart`.
+
 ## 4. Thrash lockout ("curation disabled")
 
 The unevictable floor (system prompt + tools + CLAUDE.md) is above `target`;

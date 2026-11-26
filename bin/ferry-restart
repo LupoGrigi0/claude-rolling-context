@@ -63,8 +63,12 @@ GOOD="$FERRY_DATA/last-good-commit"
 PREV=$(cat "$GOOD" 2>/dev/null || cat "$FERRY_DATA/started-commit" 2>/dev/null || true)
 NOW=$(git -C "$HERE" rev-parse HEAD 2>/dev/null || true)
 
-bring_up() {   # start through the ONE launcher, then prove it
-    bash "$HERE/hooks/start-proxy.sh" && python3 "$HERE/tools/ferry-canary"
+bring_up() {   # start through the ONE launcher, then prove it. Canary exit 3 =
+               # proxy healthy, upstream down: the proxy IS up, so that counts
+               # as up -- never roll back or withdraw over a network blip.
+    bash "$HERE/hooks/start-proxy.sh" || return 1
+    python3 "$HERE/tools/ferry-canary"; local rc=$?
+    [ $rc -eq 0 ] || [ $rc -eq 3 ]
 }
 stop_ours() {  # stop only OUR Ferry on the port, if anything of ours is there
     local p; p=$($CONF who-holds "$PORT" 2>/dev/null) || return 0
