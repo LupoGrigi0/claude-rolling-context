@@ -370,9 +370,21 @@ def _withdraw(env):
         if restore:
             env["ANTHROPIC_BASE_URL"] = restore
             print(f"Restored ANTHROPIC_BASE_URL to {restore}")
-        else:
+        elif current == DEFAULT_UPSTREAM:
+            # Already the explicit Anthropic route a previous withdraw wrote: the
+            # running session is direct, so deleting it now is safe.
             del env["ANTHROPIC_BASE_URL"]
+            env.pop(MARK, None)
             print("Removed ANTHROPIC_BASE_URL")
+        else:
+            # NEVER delete a pointer at Ferry's port: a RUNNING Claude Code ignores
+            # a deleted key and keeps sending to the dead port (Lantern: 14 hours of
+            # ECONNREFUSED; reproduced on Crossing 2026-11-26 -- delete ignored, a
+            # CHANGED value picked up within seconds). Write the real route instead,
+            # marked as ours so a later install re-points it and uninstall clears it.
+            env["ANTHROPIC_BASE_URL"] = DEFAULT_UPSTREAM
+            env[MARK] = DEFAULT_UPSTREAM
+            print(f"Set ANTHROPIC_BASE_URL to {DEFAULT_UPSTREAM} (direct; takes effect in a running session)")
     elif current:
         print(f"Left ANTHROPIC_BASE_URL={current} (Ferry did not write it)")
 

@@ -296,8 +296,10 @@ b = Box(prefs=prefs(5715, upstream="https://api.anthropic.com"),
 b.conf("point")
 b.conf("unpoint")
 env = b.settings_env()
-check("upstream = Anthropic: unpoint leaves NO base URL (never pins one Ferry did not find)",
-      "ANTHROPIC_BASE_URL" not in env, env)
+# A RUNNING session ignores a DELETED key (Lantern; reproduced 2026-11-26), so
+# withdraw/unpoint never delete a Ferry pointer: they write the real route.
+check("upstream = Anthropic: unpoint writes the EXPLICIT Anthropic route (live), not Ferry's port",
+      env.get("ANTHROPIC_BASE_URL") == "https://api.anthropic.com", env)
 b.close()
 
 print("S4 settings.json carries only the base URL")
@@ -439,8 +441,8 @@ b = Box(prefs={"ferry": {}}, settings={"env": {"ANTHROPIC_BASE_URL": "http://127
                                                MARK: "http://127.0.0.1:5791"}})
 r = b.sh("hooks/start-proxy.sh")
 env = b.settings_env() or {}
-check("config error withdraws the pointer Ferry wrote",
-      r.returncode != 0 and "ANTHROPIC_BASE_URL" not in env, (r.stdout, env))
+check("config error withdraws the pointer Ferry wrote (explicit Anthropic, not Ferry's port)",
+      r.returncode != 0 and env.get("ANTHROPIC_BASE_URL") == "https://api.anthropic.com", (r.stdout, env))
 b.close()
 
 # An EARLIER run's pointer must not survive a failed start: the next session
@@ -452,8 +454,8 @@ try:
     r = b.sh("hooks/start-proxy.sh")
     env = b.settings_env() or {}
     check("failed start withdraws the pointer Ferry wrote, says so",
-          r.returncode != 0 and "ANTHROPIC_BASE_URL" not in env and env.get("KEEP") == "1"
-          and "Removed ANTHROPIC_BASE_URL" in r.stdout, (r.stdout, env))
+          r.returncode != 0 and env.get("ANTHROPIC_BASE_URL") == "https://api.anthropic.com"
+          and env.get("KEEP") == "1" and "takes effect in a running session" in r.stdout, (r.stdout, env))
 finally:
     b.close()
 b = Box(prefs=prefs(port, upstream="http://127.0.0.1:8080"),
