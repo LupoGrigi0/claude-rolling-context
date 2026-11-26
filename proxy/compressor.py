@@ -250,6 +250,39 @@ def effective_unevictable(real_token_count, msg_chars, observed_floor=None):
     return est
 
 
+def measured_split(real_token_count, msg_chars, payload, observed_floor=None):
+    """-> (msg_tokens, unevictable, source). F2: size the bite on a MEASURED ruler.
+
+    The usage total is measured; so are the characters of every part of the
+    request. Their ratio is THIS request's chars-per-token, so split the real
+    total in proportion to characters: messages vs scaffolding (system + tools).
+    That assumes only that the ratio is roughly uniform across the request --
+    far weaker than assuming it is 4 for everyone.
+
+    Why it replaces chars/4 (Zara-c207, first production curation, 2026-11-26):
+    her request was 1,409,284 message chars at 816,522 tokens. chars/4 said the
+    messages were 352k, so "unevictable" was 464k -- but her WHOLE context after
+    curation was 391k. Real ratio there ~2.7 chars/token; the keep budget
+    collapsed and she landed ~210k under target.
+
+    The observed floor (a measurement: context can never go below it) still
+    caps the result. Falls back to effective_unevictable() when the payload is
+    unavailable, and says which source it used.
+    """
+    sc, tc, _ = scaffolding_chars(payload)
+    total = sc + tc + msg_chars
+    if real_token_count and total > 0 and (sc + tc) > 0:
+        msg_tokens = max(1, int(real_token_count * msg_chars / total))
+        unevictable = max(0, real_token_count - msg_tokens)
+        source = f"measured: {total / real_token_count:.2f} chars/token on this request"
+        if isinstance(observed_floor, int) and 0 < observed_floor < unevictable:
+            unevictable, source = observed_floor, "measured: smallest context observed"
+        return msg_tokens, unevictable, source
+    msg_tokens = max(1, msg_chars // 4)
+    return (msg_tokens, effective_unevictable(real_token_count, msg_chars, observed_floor),
+            "ESTIMATED from chars/4 (no scaffolding measurement)")
+
+
 class RollingCompressor:
     def __init__(
         self,
@@ -744,9 +777,8 @@ class RollingCompressor:
         # Subtract the unevictable scaffolding from BOTH sides before dividing.
         if real_token_count and real_token_count > 0:
             msg_chars = self._count_chars(messages)
-            msg_tokens = max(1, msg_chars // 4)          # estimate, marked as one
-            unevictable = effective_unevictable(real_token_count, msg_chars,
-                                                observed_floor)
+            msg_tokens, unevictable, _split_src = measured_split(
+                real_token_count, msg_chars, payload, observed_floor)
 
             # MEASURED FLOOR, reported alongside the estimate so the two can be
             # compared on live traffic instead of argued about.
@@ -795,12 +827,7 @@ class RollingCompressor:
                 # did so on the strength of a chars/4 subtraction that was
                 # ~7,000 too high -- advice that would have made things worse.
                 # A number that drives an action must carry its provenance.
-                _src = ("measured: the smallest context this proxy has actually "
-                        "seen" if (isinstance(observed_floor, int)
-                                   and observed_floor > 0
-                                   and observed_floor <= unevictable)
-                        else "ESTIMATED from chars/4 and historically runs HIGH "
-                             "-- verify before acting")
+                _src = _split_src
                 log.warning(
                     f"TARGET UNREACHABLE: unevictable scaffolding is "
                     f"~{unevictable:,} tokens ({_src}), at or above the target "
@@ -812,10 +839,16 @@ class RollingCompressor:
                 )
                 allowed = max(1, int(msg_tokens * MIN_KEEP_RATIO))
             keep_ratio = min(1.0, max(MIN_KEEP_RATIO, allowed / msg_tokens))
+            # PLANNED landing, logged so it can be set against the ACTUAL one
+            # (the next injected request's usage) -- two numbers, never one.
+            self.planned_landing = unevictable + int(msg_tokens * keep_ratio)
+            log.info(f"[PLAN] planned landing ~{self.planned_landing:,} tokens "
+                     f"(unevictable {unevictable:,} [{_split_src}] + kept "
+                     f"{int(msg_tokens * keep_ratio):,})")
             log.info(
                 f"Keep ratio: {keep_ratio:.1%} "
                 f"(target={self.target_tokens:,} - unevictable~{unevictable:,} "
-                f"= {allowed:,} allowed / messages~{msg_tokens:,} est) "
+                f"= {allowed:,} allowed / messages~{msg_tokens:,}) "
                 f"[was {self.target_tokens/real_token_count:.1%} under the "
                 f"pre-2026-08-26 whole-request denominator]"
             )
