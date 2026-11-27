@@ -4,7 +4,11 @@
 # A mind whose proxy is broken cannot think, so it cannot fix the proxy. This is
 # run by cron, as the mind's own user (no root, no service manager), e.g.:
 #
-#   */5 * * * * /path/to/claude-rolling-context/tools/ferry-watchdog >> ~/ferry-data/watchdog.log 2>&1
+#   */5 * * * * /path/to/claude-rolling-context/tools/ferry-watchdog
+#
+# It writes its OWN log, ~/ferry-data/watchdog.log, owner-only. (A `>> log`
+# in the cron line is created by cron's shell at umask 0002 -- world-readable,
+# and alerts land in it. Forge, Den, 2026-11-27.)
 #
 # Healthy (the canary passes): do nothing, say nothing.
 # Not healthy: run bin/ferry-restart, which brings Ferry back, ROLLS BACK to the
@@ -14,6 +18,7 @@
 # mind itself (its doorbell rings once it can think again) and, if set, to
 # FERRY_ALERT_TO. Requested by Zara-c207 + Forge-ba0e, 2026-11-26.
 set -uo pipefail
+umask 077              # the lock, the log, anything this creates: owner-only
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 HACS="${FERRY_HACS:-/usr/local/bin/hacs}"
 
@@ -24,6 +29,8 @@ mkdir -p "$DATA" || { echo "ferry-watchdog: cannot create $DATA" >&2; exit 1; }
 # Never two at once. Busy lock = another watchdog is on it (exit 0); a lock we
 # cannot even OPEN is an error, not "busy" -- that conflation once made this
 # watchdog a silent no-op on a fresh home, the exact case it exists for.
+[ -t 1 ] || exec >>"$DATA/watchdog.log" 2>&1    # cron: our own log, 0600
+chmod 600 "$DATA/watchdog.log" "$DATA/watchdog.lock" 2>/dev/null   # older ones, born 0644
 exec 9>"$DATA/watchdog.lock" || { echo "ferry-watchdog: cannot open lock" >&2; exit 1; }
 flock -n 9 || exit 0
 

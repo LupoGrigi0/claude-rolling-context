@@ -89,7 +89,8 @@ curl -s 127.0.0.1:<port>/health | grep -oE '"(curation_mode|trigger_tokens|targe
 | `bin/ferry-restart` | serving new code | WITHDRAWN (mind direct, uncurated) | -- | ROLLED BACK (serving old commit) | -- |
 
 ### Automatic repair (tools/ferry-watchdog, run from the mind's own cron)
-`*/5 * * * * <clone>/tools/ferry-watchdog >> ~/ferry-data/watchdog.log 2>&1`
+`*/5 * * * * <clone>/tools/ferry-watchdog` -- no `>> log`: it writes its own
+`~/ferry-data/watchdog.log`, owner-only (a shell redirect would create it world-readable).
 - **Healthy:** silent. **Upstream down** (canary exit 4, `UPSTREAM-DOWN`): it
   WAITS -- a network blip is not Ferry's fault and never triggers a restart.
 - **Ferry broken:** `ferry-restart` restarts; if the new code fails it **rolls

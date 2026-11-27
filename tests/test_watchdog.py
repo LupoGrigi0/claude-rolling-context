@@ -85,10 +85,16 @@ env.update(home_env(home), CLAUDE_CONFIG_DIR=str(cfg), FERRY_HACS=str(fake))
 seen = set()
 
 
+LOG = home / "ferry-data" / "watchdog.log"
+
+
 def wd():
+    # Not a TTY (as under cron): the watchdog writes its OWN log; read it.
+    before = LOG.read_text() if LOG.exists() else ""
     r = subprocess.run(["bash", str(REPO / "tools" / "ferry-watchdog")], env=env,
                        capture_output=True, text=True, timeout=180)
-    return r.returncode, r.stdout + r.stderr
+    after = LOG.read_text() if LOG.exists() else ""
+    return r.returncode, r.stdout + r.stderr + after[len(before):]
 
 
 def holder():
@@ -109,9 +115,18 @@ try:
     check("...and ALERTS the mind itself", "TO=Test-0000" in a and "RESTARTED" in a, a[:200])
 
     alerts.unlink(missing_ok=True)
+    # Recreate the lock and log on a HEALTHY run (no restart), as under cron: a
+    # restart's proxy startup sweep would tighten them and mask the bug.
+    (home / "ferry-data" / "watchdog.lock").unlink(missing_ok=True)
+    LOG.unlink(missing_ok=True)
     code, out = wd()                         # healthy -> silent
     check("control: healthy Ferry -> exit 0", code == 0, out[-200:])
     check("control: healthy Ferry -> NO alert", not alerts.exists())
+    import stat as _st
+    for f in ("watchdog.log", "watchdog.lock"):
+        fp = home / "ferry-data" / f
+        m = _st.S_IMODE(fp.stat().st_mode) if fp.exists() else None
+        check(f"{f} is owner-only (Forge: born world-readable under cron)", m is not None and not (m & 0o077), oct(m or 0))
 
     # Forge's blocker: the UPSTREAM dies (network blip), Ferry is fine. The
     # watchdog must wait -- no restart, no rollback, no withdraw, no alert.
