@@ -371,11 +371,13 @@ def _withdraw(env):
             env["ANTHROPIC_BASE_URL"] = restore
             print(f"Restored ANTHROPIC_BASE_URL to {restore}")
         elif current == DEFAULT_UPSTREAM:
-            # Already the explicit Anthropic route a previous withdraw wrote: the
-            # running session is direct, so deleting it now is safe.
-            del env["ANTHROPIC_BASE_URL"]
-            env.pop(MARK, None)
-            print("Removed ANTHROPIC_BASE_URL")
+            # Already the explicit Anthropic route a previous withdraw wrote. LEAVE
+            # it: withdraw is idempotent and never deletes. A failed restart
+            # withdraws twice in milliseconds; if the settings watcher coalesces
+            # SET-then-DELETE, the session sees only the deletion, ignores it, and
+            # stays on the dead port (Forge, Den drill T5, 2026-11-27). An
+            # explicit api.anthropic.com is equivalent to no key.
+            print(f"ANTHROPIC_BASE_URL already {DEFAULT_UPSTREAM} (direct); left as is")
         else:
             # NEVER delete a pointer at Ferry's port: a RUNNING Claude Code ignores
             # a deleted key and keeps sending to the dead port (Lantern: 14 hours of
