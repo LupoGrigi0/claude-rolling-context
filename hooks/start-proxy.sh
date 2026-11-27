@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+umask 077   # anything this writes into ferry-data / the config dir: owner-only
 # Ensure THIS mind's Ferry proxy is running, on THIS mind's port, AS THIS USER.
 # Claude Code's SessionStart hook runs it; install.sh runs it too. Pure stdlib.
 #

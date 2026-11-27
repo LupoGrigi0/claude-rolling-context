@@ -65,6 +65,8 @@ ENV_BOUND_WINDOWS = {
     "test_install.py": "drives bash install/start/uninstall scripts",
     "test_hook_registration.py": "asserts the bash SessionStart hook form",
     "test_ferry_restart.py": "drives bin/ferry-restart (bash) and reads /proc",
+    "test_restart_rollback.py": "drives bash ferry-restart and git checkout",
+    "test_watchdog.py": "drives the bash watchdog (cron-run)",
 }
 if os.name == "nt":
     ENV_BOUND = {**ENV_BOUND, **ENV_BOUND_WINDOWS}

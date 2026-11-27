@@ -18,6 +18,8 @@
 #
 # Exit 0 only when step 5 passes. Rollback if it fails: docs/RUNBOOK.md.
 set -uo pipefail
+umask 077   # last-good-commit etc. owner-only; `>` keeps an OLD file's mode, so
+            # only a fresh one showed it (Forge, Den fixture, 2026-11-27)
 
 # F10 -- AUTOMATIC ROLLBACK. If the new code does not come up and pass the
 # canary, check out the last commit that DID, and bring that up; if there is

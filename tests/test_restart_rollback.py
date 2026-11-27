@@ -129,6 +129,10 @@ try:
     check("good code -> exit 0", code == 0, out[-300:])
     _lg = data / "last-good-commit"
     check("...last-good-commit records it", _lg.exists() and _lg.read_text().strip() == GOOD)
+    import stat as _st
+    check("...and it is born owner-only (Forge: 0664 under the default umask)",
+          _lg.exists() and not (_st.S_IMODE(_lg.stat().st_mode) & 0o077),
+          oct(_st.S_IMODE(_lg.stat().st_mode)) if _lg.exists() else "absent")
 
     # 2. bad code, a good commit known -> rolled back, good code serving
     git("checkout", "-q", "--detach", BAD)
