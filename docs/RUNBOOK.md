@@ -82,6 +82,12 @@ curl -s 127.0.0.1:<port>/health | grep -oE '"(curation_mode|trigger_tokens|targe
 ```
 `curation_mode` must be `"ferry"`. Anything else **summarises** (paraphrases).
 
+### File modes are owner-only on purpose
+Every file Ferry's scripts create -- ~/ferry-data/*, the watchdog log and lock,
+and `settings.json` when Ferry rewrites it -- is 0600 (dirs 0700). That includes
+`settings.json` going from 0644 to 0600: the same user reads it, so it is
+harmless and intentional. **Do not "fix" it back.** (Forge, 2026-11-27.)
+
 ### Exit codes, so a 3am log reads right
 | tool | 0 | 1 | 2 | 3 | 4 |
 |---|---|---|---|---|---|
